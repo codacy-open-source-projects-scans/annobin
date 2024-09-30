@@ -1,0 +1,115 @@
+# copyright : Copyright (C) 2017-2024 Red Hat.
+# license   : GNU GPL v3; see accompanying LICENSE file.
+
+VPATH = @srcdir@
+
+LLVM_CXX_OPTIONS = `llvm-config --cxxflags`
+LLVM_LD_OPTIONS  = `llvm-config --ldflags`
+LLVM_SYS_LIBS    = `llvm-config --system-libs`
+
+CLANG ?= clang++
+
+PLUGIN_INSTALL_DIR := $(shell $(CLANG) --print-search-dirs | gawk -e'BEGIN { FS = ":" } /libraries/ { print gensub(" =","",1,$$2) } END { }')
+
+# Note - it would be nice to use CXXFLAGS from the environment, instead
+# of defining our own options.  But for typical annobin build operations
+# where all three plugins are being built, CXXFLAGS will usually contain
+# gcc specific command line options that trigger errors when used with
+# Clang++.
+# Note: -flto is omitted because it is not supported on Risc-V, but build
+# systems will often define it in CLANG_TARGET_OPTIONS instead.
+PLUGIN_CC_OPTIONS = \
+  -D_GLIBCXX_ASSERTIONS \
+  -DINSTALL_DIR="$(PLUGIN_INSTALL_DIR)" \
+  -fPIC \
+  -Wall \
+  -O2 \
+  -g -grecord-gcc-switches
+
+# Allow the environment to override the fortification level.
+PLUGIN_FORTIFY_OPTION ?= -D_FORTIFY_SOURCE=2
+
+PLUGIN_LD_OPTIONS = \
+  -shared \
+  -Wl,--build-id=md5 \
+  -Wl,-z,now
+
+INCDIR = @srcdir@/..
+
+CLANG_LIBS = -lLLVM
+
+PLUGIN_NAME = annobin-for-clang.so
+
+COMPILE_OPTIONS = $(CLANG_TARGET_OPTIONS) $(LLVM_CXX_OPTIONS) $(PLUGIN_CC_OPTIONS) $(PLUGIN_FORTIFY_OPTION) -I .. -I$(INCDIR)
+LINK_OPTIONS    = $(CLANG_TARGET_OPTIONS) $(LLVM_CXX_OPTIONS) $(PLUGIN_LD_OPTIONS) $(LLVM_LD_OPTIONS) $(LLVM_SYS_LIBS)
+
+
+all: $(PLUGIN_NAME) Makefile
+
+$(PLUGIN_NAME): annobin.o annobin-common.o
+	$(CLANG) $(LINK_OPTIONS) $(CLANG_LIBS) $^ -o $@
+
+annobin.o: annobin.cpp ../annobin-global.h @top_srcdir@/annobin-common.h
+	$(CLANG) $(COMPILE_OPTIONS) $< -c -o $@
+
+annobin-common.o: @top_srcdir@/annobin-common.cc @top_srcdir@/annobin-common.h
+	$(CLANG) $(COMPILE_OPTIONS) $< -c -o $@
+
+install: $(PLUGIN_NAME)
+	install -Dpm0755 -t ${PLUGIN_INSTALL_DIR} $<
+
+clean:
+	rm -f $(PLUGIN_NAME) *.o clang-plugin-test.*.out test-global-file-syms.*
+
+html info: Makefile
+
+Makefile: @srcdir@/Makefile.in
+
+# -- TESTING -------------------------------------------------------
+
+READELF = readelf
+PLUGIN = @abs_builddir@/$(PLUGIN_NAME)
+ANNOCHECK = @abs_builddir@/../annocheck/annocheck
+
+PLUGIN_TEST_OPTIONS = \
+   -O2 \
+   -g -grecord-gcc-switches \
+   -fPIE \
+    -Wall \
+   -fsanitize=safe-stack \
+   -fstack-protector-strong \
+   -fsanitize=cfi-cast-strict 
+
+#   -flto            # Not used because the object file generated is not an ELF format file.
+#   -fcf-protection  # Not used because not supported by all architectures
+
+TESTS = test-global-file-syms
+
+RED_COLOUR = "\x1B[31m"
+GREEN_COLOUR = "\e[32m"
+DEFAULT_COLOUR = "\033[0m"
+
+# To turn on verbose mode set the ANNOBIN environment variable to "verbose".
+
+check: @srcdir@/hello.c $(PLUGIN_NAME) $(addsuffix .log,$(TESTS))
+	$(CLANG) -fplugin=$(PLUGIN) $(PLUGIN_TEST_OPTIONS) $(PLUGIN_FORTIFY_OPTION) -c -x c @srcdir@/hello.c
+	$(READELF) --wide --notes hello.o > clang-plugin-test.readelf.out
+	@ grep --silent -e "annobin built by clang version" clang-plugin-test.readelf.out || (echo -e $(RED_COLOUR) "FAIL" $(DEFAULT_COLOUR) ": Clang plugin test: annobin build note not found in binary"; cat clang-plugin-test.readelf.out ; exit 1)
+	@ grep --silent -e "running on .*clang version" clang-plugin-test.readelf.out || (echo -e $(RED_COLOUR) "FAIL" $(DEFAULT_COLOUR) ": Clang plugin test: vlang version note not found in binary"; cat clang-plugin-test.readelf.out ; exit 1)
+	@ grep --silent -e "sanitize_cfi" clang-plugin-test.readelf.out || (echo -e $(RED_COLOUR) "FAIL" $(DEFAULT_COLOUR) ": Clang plugin test: sanitization note not found in binary"; cat clang-plugin-test.readelf.out ; exit 1)
+	@ grep --silent -e "SpecLoadHarden" clang-plugin-test.readelf.out || (echo -e $(RED_COLOUR) "FAIL" $(DEFAULT_COLOUR) ": Clang plugin test: SpecLoadHardened note not found in binary"; cat clang-plugin-test.readelf.out ; exit 1)
+	echo -e $(GREEN_COLOUR) "PASS" $(DEFAULT_COLOUR) ": Clang plugin test (readelf portion)"
+	$(ANNOCHECK) --skip-all --test-optimization --test-fortify --test-stack-prot --test-pie hello.o --verbose || (echo -e $(RED_COLOUR) "FAIL" $(DEFAULT_COLOUR) ": Clang plugin test: annocheck did not accept the binary"; exit 1)
+	echo -e $(GREEN_COLOUR) "PASS" $(DEFAULT_COLOUR) ": Clang plugin test (annocheck portion)"
+
+test-global-file-syms.log: @srcdir@/hello.c $(PLUGIN_NAME)
+	$(CLANG) -fplugin=$(PLUGIN) -fplugin-arg-annobin-global-file-syms -c -x c $< -o test-global-file-syms.o
+	$(READELF) --wide --syms test-global-file-syms.o > test-global-file-syms.readelf.out
+	@ grep --silent -e '_annobin.\+hello_c_[0-9]\+_[0-9]\+_start' test-global-file-syms.readelf.out \
+|| (echo -e $(RED_COLOUR) "FAIL" $(DEFAULT_COLOUR) ": Clang global file sym test: no timestamp in start symbol"; \
+cat test-global-file-syms.readelf.out ; exit 1)
+	@ grep --silent -e '_annobin.\+hello_c_[0-9]\+_[0-9]\+_end' test-global-file-syms.readelf.out \
+|| (echo -e $(RED_COLOUR) "FAIL" $(DEFAULT_COLOUR) ": Clang global file sym test: no timestamp in end symbol"; \
+cat test-global-file-syms.readelf.out ; exit 1)
+	@ echo -e $(GREEN_COLOUR) "PASS" $(DEFAULT_COLOUR) ": Clang global-file-syms test" | tee $@
+

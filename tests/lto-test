@@ -1,0 +1,48 @@
+#!/bin/bash
+
+# Copyright (c) 2017-2024 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+TEST_NAME=lto
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-g -c -O2 -fpie -flto -D_FORTIFY_SOURCE=2"
+
+start_test
+
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello.c
+mv hello.o lto-hello.o
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello2.c
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello3.c
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -shared $srcdir/hello_lib.c -o libhello.so
+
+# Link without system files as these may not have been hardened.
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
+    -flto \
+    -pie \
+  lto-hello.o hello2.o hello3.o -L. -lhello -o lto-test.exe
+
+# Run annocheck, but only enable the LTO test.
+
+$ANNOCHECK -v --ignore-gaps --skip-all --test-lto lto-test.exe --fixed-format-messages --suppress-version-warnings > lto-test.out
+
+grep -e "PASS: test: lto" lto-test.out
+if [ $? != 0 ];
+then
+    echo "lto-test: FAIL: did not detect LTO compilation"
+    cat lto-test.out
+    end_test
+    exit 1
+fi
+
+end_test

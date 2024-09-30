@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# Copyright (c) 2017-2024 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Mimics how glibc builds C sources without annotation.
+
+TEST_NAME=glibc-notes
+. $srcdir/common.sh
+
+OPTS="-g -c -O2 -fpie"
+
+start_test
+
+$GCC -Wa,--generate-missing-build-notes=yes $OPTS $srcdir/hello.c
+if [ $? != 0 ];
+then
+    $GCC $OPTS $srcdir/hello.c
+    if [ $? != 0 ];
+    then
+	echo "glibc-notes-test: FAIL: Could not compile source files"
+	exit 1
+    fi
+    echo "glibc-notes-test: Assembler does not support --generate-missing-build-notes, skipping test"
+    end_test
+    exit 0
+fi
+
+$GCC -Wa,--generate-missing-build-notes=yes $OPTS $srcdir/hello2.c
+$GCC -Wa,--generate-missing-build-notes=yes $OPTS $srcdir/hello3.c
+$GCC -Wa,--generate-missing-build-notes=yes $OPTS -shared $srcdir/hello_lib.c -o libhello.so
+
+# Link without system files as these may not have been hardened.
+$GCC -pie -Wl,-z,now hello.o hello2.o hello3.o -L. -lhello -o glibc-notes.exe
+
+# Run annocheck
+
+SKIPS="--skip-cf-protection --skip-property-note --skip-stack-realign --skip-entry --skip-dynamic-tags --skip-lto --skip-fortify --skip-warnings --suppress-version-warnings --skip-branch-protection --skip-not-branch-protection"
+
+$ANNOCHECK glibc-notes.exe $SKIPS --ignore-gaps > glibc-notes.out
+grep -e "PASS" glibc-notes.out
+if [ $? != 0 ];
+then
+    echo "glibc-notes-test: FAIL: generating assembler notes did not hide lack of GCC notes"
+    cat glibc-notes.out
+    exit 1
+fi
+
+end_test

@@ -1,0 +1,152 @@
+#!/bin/bash
+
+# Copyright (c) 2018-2024 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+
+# Test for debuginfod functionality in annocheck.
+
+TEST_NAME=debuginfod
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+
+FAIL=" $TEST_NAME: FAIL:"
+
+if [ -z $(command -v $DEBUGINFOD) ]; then
+  echo "$FAIL Could not find debuginfod"
+  exit 1
+fi
+
+if [ -z $(command -v $CURL) ]; then
+  echo "$FAIL Could not find curl"
+  exit 1
+fi
+
+if [ -z $(command -v $SS) ]; then
+  echo "$FAIL Could not find $SS"
+  exit 1
+fi
+
+# Use the same command line options that normal spec file will use,
+# *except* that we disable the use of the annobin plugin, since this
+# will pick up the one in the system directory, not the one just built"
+
+OPTS="$(rpm --eval '%undefine _annotated_build %build_cflags %build_ldflags')"
+
+# The rpm macros may not be available, so if necessary use our own.
+
+if ! [[ $OPTS == *"redhat-hardened-cc1"* ]];
+then
+    echo " $TEST_NAME: using built-in option selection instead"
+    OPTS="-O2 -fexceptions -flto -g -grecord-gcc-switches -Wall -Werror=format-security -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fPIE -fstack-protector-strong -fasynchronous-unwind-tables -fstack-clash-protection -Wl,-z,relro -Wl,--as-needed  -Wl,-z,now -pie"
+fi
+
+# Now add in our newly built plugin.
+OPTS+=" -fplugin=$PLUGIN"
+
+start_test
+
+$GCC $OPTS -c $srcdir/hello.c $srcdir/hello2.c $srcdir/hello3.c $srcdir/hello_lib.c
+$GCC hello.o hello2.o hello3.o hello_lib.o $OPTS -o debuginfod-test.exe
+
+$OBJCOPY --only-keep-debug debuginfod-test.exe debuginfod-test.dbg
+$OBJCOPY --strip-debug debuginfod-test.exe
+$OBJCOPY --add-gnu-debuglink=debuginfod-test.dbg debuginfod-test.exe
+
+# Move the separate debuginfo so that annocheck cannot find it without debuginfod.
+mkdir dbg
+mv debuginfod-test.dbg dbg
+
+export DEBUGINFOD_URLS=
+export DEBUGINFOD_TIMEOUT=20
+export DEBUGINFOD_CACHE_PATH=${PWD}/.debuginfod_cache
+
+# Find an unused port number
+while true; do
+    PORT=`expr '(' $RANDOM % 1000 ')' + 9000`
+    $SS -atn | grep -F ":$PORT" || break
+done
+
+DB=${PWD}/.debuginfod.db
+PID=0
+
+cleanup()
+{
+  if [ $PID != 0]; then kill -INT $PID; wait $PID; fi
+  exit
+}
+
+trap cleanup 1 2 3 5 9 15
+
+$DEBUGINFOD -d $DB -p $PORT -F dbg >/dev/null 2>&1 &
+PID=$!
+
+wait_ready()
+{
+  port=$1;
+  what=$2;
+  value=$3;
+  timeout=20;
+
+  echo " $TEST_NAME: Wait $timeout seconds on $port for metric $what to change to $value"
+  while [ $timeout -gt 0 ]; do
+    mvalue="$($CURL -s http://127.0.0.1:$port/metrics \
+              | grep "$what" | awk '{print $NF}')"
+    if [ -z "$mvalue" ]; then mvalue=0; fi
+      echo "metric $what: $mvalue"
+      if [ "$mvalue" -eq "$value" ]; then
+        break;
+    fi
+    sleep 0.5;
+    ((timeout--));
+  done;
+
+  if [ $timeout -eq 0 ]; then
+    echo "$FAIL metric $what never changed to $value on port $port"
+    $CURL -s http://127.0.0.1:$port/metrics
+
+    if [ $PID != 0 ]; then
+      kill -INT $PID; wait $PID;
+    fi
+
+    exit 1;
+  fi
+}
+
+# Wait for server to initialize.
+wait_ready $PORT 'ready' 1
+wait_ready $PORT 'thread_work_total{role="traverse"}' 1
+wait_ready $PORT 'thread_work_pending{role="scan"}' 0
+wait_ready $PORT 'thread_busy{role="scan"}' 0
+
+export DEBUGINFOD_URLS=http://127.0.0.1:$PORT
+
+$ANNOCHECK -v -v --ignore-gaps --skip-entry --skip-property-note --skip-cf-protection --suppress-version-warnings debuginfod-test.exe > debuginfod-test.out
+
+if [ $PID != 0 ]; then kill -INT $PID; wait $PID; fi
+
+# FAIL if separate debuginfo is not found in client cache (and debuginfod support was enabled).
+# Note - with newer versions of annocheck the debuginfod server is contacted via the libdwfl
+# library, so there are no longer any messages about opening separate debug info files.
+grep --silent \
+     -e "Opened separate debug file: .*debuginfod_cache" \
+     -e "support for debuginfod not built into annocheck" \
+     -e "DW_AT_producer" \
+     debuginfod-test.out
+if [ $? != 0 ]; then
+  echo "$FAIL separate debuginfo not found:"
+  cat debuginfod-test.out
+  exit 1
+fi
+
+end_test

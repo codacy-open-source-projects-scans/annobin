@@ -1,0 +1,131 @@
+# copyright : Copyright (C) 2017-2024 Red Hat.
+# license   : GNU GPL v3; see accompanying LICENSE file.
+
+VPATH = @srcdir@
+
+LLVM_CXX_OPTIONS = `llvm-config --cxxflags`
+LLVM_LD_OPTIONS  = `llvm-config --ldflags`
+LLVM_SYS_LIBS    = `llvm-config --system-libs`
+
+CLANG ?= clang++
+
+PLUGIN_INSTALL_DIR := $(shell $(CLANG) --print-search-dirs | gawk -e'BEGIN { FS = ":" } /libraries/ { print gensub(" =","",1,$$2) } END { }')
+
+# Note - it would be nice to use CXXFLAGS from the environment, instead
+# of defining our own options.  But for typical annobin build operations
+# where all three plugins are being built, CXXFLAGS will usually contain
+# gcc specific command line options that trigger errors when used with
+# Clang++.
+# Note: -flto is omitted because it is not supported on Risc-V, but build
+# systems will often define it in CLANG_TARGET_OPTIONS instead.
+PLUGIN_CC_OPTIONS = \
+  -D_GLIBCXX_ASSERTIONS \
+  -DINSTALL_DIR="$(PLUGIN_INSTALL_DIR)" \
+  -fPIC \
+  -Wall \
+  -O2 \
+  -g -grecord-gcc-switches
+
+# Allow the environment to override the fortification level.
+PLUGIN_FORTIFY_OPTION ?= -D_FORTIFY_SOURCE=2
+
+PLUGIN_LD_OPTIONS = \
+  -shared \
+  -Wl,--build-id=md5 \
+  -Wl,-z,now
+
+INCDIR = @srcdir@/..
+
+PLUGIN_NAME = annobin-for-llvm.so
+
+COMPILE_OPTIONS = $(CLANG_TARGET_OPTIONS) $(LLVM_CXX_OPTIONS) $(PLUGIN_CC_OPTIONS) $(PLUGIN_FORTIFY_OPTION) -I .. -I$(INCDIR)
+LINK_OPTIONS    = $(CLANG_TARGET_OPTIONS) $(LLVM_CXX_OPTIONS) $(PLUGIN_LD_OPTIONS) $(LLVM_LD_OPTIONS) $(LLVM_SYS_LIBS)
+
+
+all: $(PLUGIN_NAME) Makefile
+
+$(PLUGIN_NAME): annobin.o annobin-common.o
+	$(CLANG) $(LINK_OPTIONS) $^ -o $@
+
+annobin.o: annobin.cpp ../annobin-global.h @top_srcdir@/annobin-common.h
+	$(CLANG) $(COMPILE_OPTIONS) $< -c -o $@
+
+annobin-common.o: @top_srcdir@/annobin-common.cc @top_srcdir@/annobin-common.h
+	$(CLANG) $(COMPILE_OPTIONS) $< -c -o $@
+
+install: $(PLUGIN_NAME)
+	install -Dpm0755 -t ${PLUGIN_INSTALL_DIR} $<
+
+clean:
+	rm -f $(PLUGIN_NAME) *.o llvm-plugin-test.*.out test-global-file-syms.*
+
+html info: Makefile
+
+Makefile: @srcdir@/Makefile.in
+
+# -- TESTING -------------------------------------------------------
+
+READELF = readelf
+PLUGIN = @abs_builddir@/$(PLUGIN_NAME)
+ANNOCHECK = @abs_builddir@/../annocheck/annocheck
+
+PLUGIN_TEST_OPTIONS = \
+   -D_GLIBCXX_ASSERTIONS \
+   -O2 \
+   -g -grecord-gcc-switches \
+   -fPIE \
+   -Wall \
+   -fstack-protector-strong \
+   -fsanitize=safe-stack
+
+#   -flto            # Not used because the object file generated is not an ELF format file.
+#   -fcf-protection  # Not used because not supported by all architectures
+
+TESTS = test-global-file-syms
+
+check: $(PLUGIN_NAME)
+	@ if [ `echo | clang -dM -E - | grep __clang_major__ | cut -f 3 -d ' '` -gt 14 ] ; \
+	then \
+		make -s check-newpm ; \
+	else \
+		if [ `echo | clang -dM -E - | grep __clang_major__ | cut -f 3 -d ' '` -gt 12 ] ; \
+		then \
+		     make -s check-legacy check-newpm ; \
+		else \
+		     make -s check-pre-clang-13 ; \
+		fi \
+	fi
+
+check-legacy:
+	$(MAKE) check-run LOAD_PLUGIN_ARG="-flegacy-pass-manager -fplugin=$(PLUGIN)"
+
+check-newpm:
+	$(MAKE) check-run LOAD_PLUGIN_ARG="-fpass-plugin=$(PLUGIN)"
+
+check-pre-clang-13:
+	$(MAKE) check-run LOAD_PLUGIN_ARG="-Xclang -load -Xclang $(PLUGIN)"
+
+RED_COLOUR = "\x1B[31m"
+GREEN_COLOUR = "\e[32m"
+DEFAULT_COLOUR = "\033[0m"
+
+# To turn on verbose mode set the ANNOBIN environment variable to "verbose".
+
+check-run: @srcdir@/hello.c $(addsuffix .log,$(TESTS))
+	echo Compiling with $(LOAD_PLUGIN_ARG) ...
+	$(CLANG) $(LOAD_PLUGIN_ARG)  $(PLUGIN_TEST_OPTIONS) $(PLUGIN_FORTIFY_OPTION) -c -x c @srcdir@/hello.c
+	echo Checking with readelf ...
+	$(READELF) --wide --notes hello.o > llvm-plugin-test.readelf.out
+	grep --silent -e "annobin built by llvm version" llvm-plugin-test.readelf.out
+	grep --silent -e "running on LLVM version" llvm-plugin-test.readelf.out
+	grep --silent -e "stack_clash" llvm-plugin-test.readelf.out
+	echo Checking with annocheck ...
+	$(ANNOCHECK) --skip-all --test-optimization --test-fortify --test-stack-prot hello.o || (echo -e $(RED_COLOUR) "FAIL" $(DEFAULT_COLOUR) ": LLVM plugin test"; $(ANNOCHECK) --skip-all --test-optimization --test-fortify --test-stack-prot hello.o ; exit 1)
+	echo -e $(GREEN_COLOUR) "PASS" $(DEFAULT_COLOUR) ": LLVM plugin test [$(LOAD_PLUGIN_ARG)]"
+
+test-global-file-syms.log: @srcdir@/hello.c
+	ANNOBIN="verbose,global-file-syms" $(CLANG) $(LOAD_PLUGIN_ARG) -c -x c $< -o test-global-file-syms.o
+	@ $(READELF) --wide --syms  test-global-file-syms.o > test-global-file-syms.readelf.out
+	@ grep --silent -e '_annobin.\+hello_c_[0-9]\+_[0-9]\+_start' test-global-file-syms.readelf.out || (echo -e $(RED_COLOUR) "FAIL" $(DEFAULT_COLOUR) ": LLVM global file sym test: no timestamp in start symbol"; cat test-global-file-syms.readelf.out ; exit 1)
+	@ grep --silent -e '_annobin.\+hello_c_[0-9]\+_[0-9]\+_end' test-global-file-syms.readelf.out || (echo -e $(RED_COLOUR) "FAIL" $(DEFAULT_COLOUR) ": LLVM global file sym test: no timestamp in end symbol"; cat test-global-file-syms.readelf.out ; exit 1)
+	@ echo -e $(GREEN_COLOUR) "PASS" $(DEFAULT_COLOUR) ": LLVM global-file-syms test" | tee $@

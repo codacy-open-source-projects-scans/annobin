@@ -1,0 +1,15 @@
+# copyright : Copyright (C) 2017-2024 Red Hat.
+# license   : GNU GPL v3; see accompanying LICENSE file
+
+prefix=/usr
+exec_prefix=${prefix}
+libdir=/usr/lib64
+includedir=/usr/include
+
+Name: libannocheck
+Description: library for checking the security hardening status of binaries
+Version: 12.20
+URL: https://sourceware.org/annobin/
+
+Libs: -L${libdir} -lannocheck
+Cflags: -I${includedir}

@@ -1,0 +1,105 @@
+#!/bin/bash
+
+# Copyright (c) 2024 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Build and test GO applications
+
+TEST_NAME=go-fips
+. $srcdir/common.sh
+
+start_test
+
+#----------------------------------------------------------------------------------
+
+echo " $TEST_NAME: Running: $GO build no-use-crypto.go"
+CGO_ENABLED=0 $GO build $srcdir/no-use-crypto.go
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: Building GO binaries not supported"
+    end_test
+    exit 0
+fi
+
+echo " $TEST_NAME: Checking a GO binary that does not use crypto"
+
+# Run annocheck
+
+echo " $TEST_NAME: Running: $ANNOCHECK -v --skip-all --test-fips no-use-crypto"
+$ANNOCHECK -v --skip-all --test-fips no-use-crypto > no-use-crypto.out
+grep -e "skip: fips test" no-use-crypto.out
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not ignore a GO binary that does not use crypto"
+    cat no-use-crypto.out
+    end_test
+    exit 1
+fi
+
+echo " $TEST_NAME: PASS: annocheck ignored a GO binary that does not use crypto"
+
+#----------------------------------------------------------------------------------
+
+echo " $TEST_NAME: Running: CGO_ENABLED=1 $GO build use-crypto.go"
+CGO_ENABLED=1 $GO build $srcdir/use-crypto.go
+if [ $? != 0 ]; then
+  echo " $TEST_NAME: SKIP: Building GO binaries with CGO enabled not supported"
+  end_test
+  exit 0
+fi
+
+echo " $TEST_NAME: Checking a FIPS-compliant GO binary"
+
+# Run annocheck
+
+$ANNOCHECK -v --skip-all --test-fips use-crypto > use-crypto.out
+grep -e "PASS" use-crypto.out
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not detect a FIPS compliant GO binary"
+    cat use-crypto.out
+    end_test
+    exit 1
+fi
+
+echo " $TEST_NAME: PASS: annocheck detected a FIPS compliant GO binary"
+
+#----------------------------------------------------------------------------------
+
+echo " $TEST_NAME: Running: CGO_ENABLED=0 $GO build use-crypto.go"
+CGO_ENABLED=0 $GO build $srcdir/use-crypto.go
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: Building GO binaries with CGO disabled not supported"
+    end_test
+    exit 0
+fi
+
+echo " $TEST_NAME: Checking a non-FIPS-compliant GO binary"
+
+# Run annocheck
+
+$ANNOCHECK -v --skip-all --test-fips use-crypto > use-crypto.out
+grep -e "FAIL" use-crypto.out
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not detect a non-FIPS compliant GO binary"
+    cat use-crypto.out
+    end_test
+    exit 1
+fi
+
+echo " $TEST_NAME: PASS: annocheck detected a non-FIPS compliant GO binary"
+
+#----------------------------------------------------------------------------------
+
+end_test
