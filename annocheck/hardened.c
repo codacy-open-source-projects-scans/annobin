@@ -37,7 +37,7 @@
 
 /* Predefined names for all of the sources of information scanned by this checker.  */
 #define SOURCE_ANNOBIN_NOTES    "annobin notes"
-#define SOURCE_ANNOBIN_STRING_NOTES ".annobin.notes"
+#define SOURCE_ANNOBIN_STRING_NOTES ANNOBIN_STRING_SECTION_NAME
 #define SOURCE_COMMENT_SECTION  "comment section"
 #define SOURCE_DW_AT_LANGUAGE   "DW_AT_language string"
 #define SOURCE_DW_AT_PRODUCER   "DW_AT_producer string"
@@ -6515,8 +6515,12 @@ static bool
 check_progbits_section (annocheck_data *     data,
 			annocheck_section *  sec)
 {
-  if (streq (sec->secname, ".rodata"))
+  if (sec->data->d_size >= 7 && streq (sec->secname, ".rodata"))
     return scan_rodata_section (data, sec);
+
+  if (sec->data->d_size >= strlen (ANNOBIN_STRING_SECTION_NAME)
+      && streq (sec->secname, ANNOBIN_STRING_SECTION_NAME))
+    return check_annobin_string_section (data, sec);
 
   /* At the moment we are only interested in the .comment section.  */
   if (sec->data->d_size <= 11 || ! streq (sec->secname, ".comment"))

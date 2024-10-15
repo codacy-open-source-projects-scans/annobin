@@ -349,7 +349,10 @@ annobin_emit_asm (const char * text, const char * comment)
 void
 annobin_output_string_note (const char * note)
 {
-  fprintf (asm_out_file, "\t.pushsection %s,\"MS\",%%3,1\n", ANNOBIN_STRING_SECTION_NAME);
+  /* Note: We use %1 (SHT_PROGBITS) rather than the more obvious %3 (SHT_STRTAB)
+     for the annobin string note section because the LLD and MOLD linkers will
+     silently discard any string table that is not indexed by another section.  */
+  fprintf (asm_out_file, "\t.pushsection %s,\"MS\",%%1,1\n", ANNOBIN_STRING_SECTION_NAME);
   fprintf (asm_out_file, "\t.asciz \"%s\"\n", note);
   fprintf (asm_out_file, "\t.popsection\n");  
 }

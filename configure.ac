@@ -9,7 +9,7 @@ AC_CONFIG_SRCDIR([annobin-global.h.in])
 
 # NB/ When updating the ANNOBIN_VERSION below, remember to
 # also update VERSION in the PROJECT section of meson.build.
-ANNOBIN_VERSION=12.70
+ANNOBIN_VERSION=12.71
 AC_SUBST(ANNOBIN_VERSION)
 
 AC_CANONICAL_SYSTEM
