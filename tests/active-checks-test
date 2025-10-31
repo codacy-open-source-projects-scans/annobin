@@ -1,0 +1,70 @@
+#!/bin/bash
+
+# Copyright (c) 2018-2024 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+TEST_NAME=active-checks
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+GCC_OPTS="-D__FORTIFY_SOURCE=2 -DGLIBCXX_ASSERTIONS -flto"
+
+start_test
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c $GCC_OPTS > gcc.out 2>&1
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: FAIL: could not compile test file"
+    echo "$TEST_NAME: gcc command line: $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c $GCC_OPTS"
+    echo "$TEST_NAME: gcc output:"
+    cat gcc.out
+    end_test
+    exit 1
+fi
+
+result=0
+
+grep -q "did you mean: -D_GLIBCXX_ASSERTIONS ?" gcc.out
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: FAIL: did not find expected warning message about -D_GLIBCXX_ASSERTIONS typo"
+    result=1
+else
+    echo "$TEST_NAME: PASS: found expected warning message about -D_GLIBCXX_ASSERTIONS typo"
+fi
+
+grep -q "did you mean: -D_FORTIFY_SOURCE ?" gcc.out
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: FAIL: did not find expected warning message about -D_FORTIFY_SOURCE typo"
+    result=1
+else
+    echo "$TEST_NAME: PASS: found expected warning message about -D_FORTIFY_SOURCE typo"
+fi
+
+grep -q -e "-D_FORTIFY_SOURCE not defined" gcc.out
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: FAIL: did not find expected warning message about missing -D_FORTIFY_SOURCE"
+    result=1
+else
+    echo "$TEST_NAME: PASS: found expected warning message about missing -D_FORTIFY_SOURCE"
+fi
+
+if [ $result == 1 ];
+then
+    echo "$TEST_NAME: output from gcc:"
+    cat gcc.out
+    end_test
+    exit 1
+fi
+
+end_test

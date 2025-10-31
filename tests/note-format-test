@@ -1,0 +1,124 @@
+#!/bin/bash
+
+# Copyright (c) 2018-2024 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+TEST_NAME=note-format
+. $srcdir/common.sh
+
+start_test
+
+#---------------------------------------------------------------------------------
+
+PLUGIN_OPTS="-fplugin-arg-annobin-note-format=note"
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c"
+$COMMAND > gcc.out
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: Could not compile source file with ELF format notes"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat gcc.out
+    end_test
+    exit 1
+fi
+
+COMMAND="$ANNOCHECK -v --ignore-gaps --skip-all hello.o"
+$COMMAND > annocheck.out
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not like ELF format notes"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat annocheck.out
+    end_test
+    exit 1
+fi
+
+echo " $TEST_NAME: PASS: ELF note format test"
+
+#---------------------------------------------------------------------------------
+
+PLUGIN_OPTS="-fplugin-arg-annobin-note-format=string"
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c"
+$COMMAND > gcc.out
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: Could not compile source file with string format notes"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat gcc.out
+    end_test
+    exit 1
+fi
+
+COMMAND="$ANNOCHECK -v --ignore-gaps --skip-all hello.o"
+$COMMAND > annocheck.out
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not like string format notes"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat annocheck.out
+    end_test
+    exit 1
+fi
+
+echo " $TEST_NAME: PASS: string note format test"
+
+#---------------------------------------------------------------------------------
+
+PLUGIN_OPTS=""
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/unused_code.c"
+ANNOBIN=note-format=string $COMMAND > gcc.out
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: Could not compile unused.c source file with string format notes"
+    echo " $TEST_NAME: command: ANNOBIN=note-format=string $COMMAND"
+    cat gcc.out
+    end_test
+    exit 1
+fi
+
+COMMAND="$ANNOCHECK -v --ignore-gaps --skip-all --test-optimization unused_code.o"
+$COMMAND > annocheck.out
+if [ $? == 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not issue a FAIL result"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat annocheck.out
+    end_test
+    exit 1
+fi
+
+grep -e "level too low" annocheck.out
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not issue the expected FAIL result"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat annocheck.out
+    end_test
+    exit 1
+fi
+
+grep -e "unused_code.c" annocheck.out
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not report the source file"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat annocheck.out
+    end_test
+    exit 1
+fi
+
+end_test
+
+echo " $TEST_NAME: PASS: string note filename test"

@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Copyright (c) 2022-2024 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+TEST_NAME=fast
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-fpie -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+EXTRA_OPTS="-fcf-protection -mstackrealign"
+FORT_OPTS="-O2 -D_FORTIFY_SOURCE=2"
+
+start_test
+
+$GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $FORT_OPTS $srcdir/hello_hard.c
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: Compiler might not support -fcf-protection, retrying without it"
+    EXTRA_OPTS="-mstackrealign"
+    $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $FORT_OPTS -$srcdir/hello_hard.c
+    if [ $? != 0 ];
+    then
+        echo "$TEST_NAME: Compiler might not support -mstackrealign, retrying without it"
+        EXTRA_OPTS="-fcf-protection"
+        $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $FORT_OPTS $srcdir/hello_hard.c
+        if [ $? != 0 ];
+        then
+            echo "$TEST_NAME: Compiler might not support either -fcf-protection or -mstackrealign, retrying without both"
+            EXTRA_OPTS=""
+            $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $FORT_OPTS $srcdir/hello_hard.c
+            if [ $? != 0 ];
+            then
+                echo "$TEST_NAME: Failed :-("
+                end_test
+                exit 1
+            fi
+        fi
+    fi
+fi
+
+$GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS $FORT_OPTS $OPTS $EXTRA_OPTS $srcdir/hello2.c
+$GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS $FORT_OPTS $OPTS $EXTRA_OPTS $srcdir/hello_lib.c
+$GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -Ofast     $OPTS $EXTRA_OPTS $srcdir/hello3.c
+$GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS $FORT_OPTS $OPTS $EXTRA_OPTS $srcdir/hello_hard.c
+
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS hello_hard.o hello2.o hello3.o hello_lib.o -o bad-fast-test.exe
+
+AOPTS="--ignore-gaps --skip-all --test-fast --suppress-version-warnings"
+$ANNOCHECK $AOPTS bad-fast-test.exe > fast.out
+grep -e "MAYB: test: fast" fast.out
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: FAIL: annocheck did not detect incosistent use of -Ofast"
+    echo "$TEST_NAME: Annocheck command: $ANNOCHECK $AOPTS fast-test.exe"
+    echo "$TEST_NAME: Annocheck output: "
+    cat fast.out
+    uuencode bad-fast-test.exe bad-fast-test.exe
+    end_test
+    exit 1
+fi
+
+TEST_NAME=fast2
+
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -Ofast $OPTS $EXTRA_OPTS $srcdir/fast.c -lm -o good-fast.exe
+$ANNOCHECK $AOPTS --verbose good-fast.exe > good-fast.out
+grep -e "PASS: fast test" -e "skip: fast test because" good-fast.out
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: FAIL: annocheck complained about a legitimate use of -Ofast"
+    echo "$TEST_NAME: Annocheck command: $ANNOCHECK $AOPTS fast2.exe"
+    $ANNOCHECK $AOPTS --verbose good-fast.exe 
+    uuencode good-fast.exe good-fast.exe
+    end_test
+    exit 1
+fi
+
+end_test

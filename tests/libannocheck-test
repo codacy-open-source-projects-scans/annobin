@@ -1,0 +1,75 @@
+#!/bin/bash
+
+# Copyright (c) 2021-2024 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+TEST_NAME=libannocheck
+. $srcdir/common.sh
+
+start_test
+
+LIBANNOCHECKDIR=${LIBANNOCHECKDIR:-../../annocheck/.libs}
+INCDIR=${INCDIR:-../../annocheck}
+
+OPTS="-O2 -I $INCDIR"
+
+COMMAND="$GCC $OPTS -c $srcdir/use-libannocheck.c"
+$COMMAND
+if [ $? != 0 ];
+then
+	echo " $TEST_NAME: FAIL: Could not compile source file"
+	echo " $TEST_NAME: command: $COMMAND"
+	end_test
+	exit 1
+fi
+
+COMMAND="$GCC use-libannocheck.o -L $LIBANNOCHECKDIR -lannocheck -o use-libannocheck -lelf -ldw -Wl,-rpath=$LIBANNOCHECKDIR -Wl,-z,now"
+$COMMAND
+if [ $? != 0 ];
+then
+	echo " $TEST_NAME: FAIL: Could not link source file"
+	echo " $TEST_NAME: command: $COMMAND"
+	end_test
+	exit 1
+fi
+
+echo " $TEST_NAME: Running first test - expecting EXIT_SUCCESS"
+
+./use-libannocheck > libannocheck.out
+if [ $? != 0 ];
+then
+	echo " $TEST_NAME: FAIL: libannocheck tester returned FAIL exit code"
+	end_test
+	exit 1
+fi
+
+COMMAND="$GCC use-libannocheck.o -L $LIBANNOCHECKDIR -lannocheck -o use-libannocheck -lelf -ldw -Wl,-rpath=$LIBANNOCHECKDIR -Wl,-z,lazy"
+$COMMAND
+if [ $? != 0 ];
+then
+	echo " $TEST_NAME: FAIL: Could not link source file (second version)"
+	echo " $TEST_NAME: command: $COMMAND"
+	end_test
+	exit 1
+fi
+
+echo " $TEST_NAME: Running second test - expecting EXIT_FAILURE"
+
+./use-libannocheck > libannocheck.out
+if [ $? == 0 ];
+then
+	echo " $TEST_NAME: FAIL: libannocheck tester returned PASS exit code for a failing binary"
+	end_test
+	exit 1
+fi
+
+end_test
