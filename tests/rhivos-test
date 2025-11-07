@@ -115,10 +115,10 @@ then
     result=1
 fi
 
-grep -q -e "PASS: rwx-seg" rhivos.out
+grep -q -e "PASS: load-segments" rhivos.out
 if [ $? != 0 ];
 then
-    echo "$TEST_NAME: FAIL: annocheck did not detect the absence of segments with RWX permission"
+    echo "$TEST_NAME: FAIL: annocheck did not detect the absence of a segment with RWX permission"
     result=1
 fi
 

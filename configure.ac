@@ -1,15 +1,18 @@
 # file      : configure.ac
-# copyright : Copyright (c) 2017-2024 Red Hat
+# copyright : Copyright (c) 2017-2025 Red Hat
 # license   : GNU GPL v3 or later; see accompanying LICENSE file
 
 AC_PREREQ(2.64)
-AC_INIT([Binary Annotations], 12.0,,[annobin-plugin])
+AC_INIT([Binary Annotations], 13.0,,[annobin-plugin])
 AC_CONFIG_AUX_DIR([config])
+AC_CONFIG_MACRO_DIRS([config])
 AC_CONFIG_SRCDIR([annobin-global.h.in])
 
 # NB/ When updating the ANNOBIN_VERSION below, remember to
 # also update VERSION in the PROJECT section of meson.build.
-ANNOBIN_VERSION=12.71
+# Also note that the number after the decimal point is limited
+# to two digits due to various assumptions in the code.
+ANNOBIN_VERSION=13.03
 AC_SUBST(ANNOBIN_VERSION)
 
 AC_CANONICAL_SYSTEM
@@ -20,8 +23,19 @@ AC_USE_SYSTEM_EXTENSIONS
 # -Wall: Issue all automake warnings.
 # -Wno-portability: Don't warn about constructs supported by GNU make.
 #    (because GCC requires GNU make anyhow).
-AM_INIT_AUTOMAKE([foreign no-dist no-define -Wall -Wno-portability])
+AM_INIT_AUTOMAKE([foreign no-dist no-define subdir-objects -Wall -Wno-portability])
 
+if test -z "$ac_cv_prog_AWK"; then
+  AC_MSG_ERROR([Could not find awk])
+fi
+AC_PATH_PROG(CMP, cmp)
+if test -z "$ac_cv_path_CMP"; then
+  AC_MSG_ERROR([Could not find cmp])
+fi
+AC_PATH_PROG(DIFF, diff)
+if test -z "$ac_cv_path_DIFF"; then
+  AC_MSG_ERROR([Could not find diff])
+fi
 AC_PROG_CXX
 AC_LANG(C++)
 
@@ -168,22 +182,56 @@ AC_CONFIG_FILES(annocheck/libannocheck.h)
 if test "$with_annocheck" != no -o "$with_gcc_plugin" != no; then
   AC_CONFIG_HEADERS(gcc-plugin/config.h)
 fi
+
 if test "$with_docs" != no; then
   AC_CONFIG_FILES(doc/Makefile)
 fi
+
 if test "$with_tests" != no; then
+  if test "x$with_debuginfod" != xno; then
+    AC_PATH_PROG(DEBUGINFODPROG, debuginfod)
+    if test -z "$ac_cv_path_DEBUGINFODPROG"; then
+      AC_MSG_ERROR([Could not find debuginfod])
+    fi
+    AC_PATH_PROG(SS, ss)
+    if test -z "$ac_cv_path_SS"; then
+      AC_MSG_ERROR([Could not find iproute])
+    fi
+  fi
   AC_CONFIG_FILES(tests/Makefile)
 fi
+
 if test "$with_annocheck" != no; then
+  AC_CHECK_HEADER([dwarf.h],
+                  [], [AC_MSG_ERROR([Cannot find elfutils headers])])
   AC_CONFIG_FILES(annocheck/Makefile)
 fi
+
 if test "$with_clang_plugin" != no; then
+  AC_CHECK_TARGET_TOOL(CLANGXX, clang++)
+  if test -z "$ac_ct_CLANGXX"; then
+    AC_MSG_ERROR([Could not find clang++])
+  fi
+  AC_PATH_PROG(LLVM_CONFIG, llvm-config)
+  if test -z "$ac_cv_path_LLVM_CONFIG"; then
+    AC_MSG_ERROR([Could not find llvm-config])
+  fi
+  AC_CHECK_HEADER([clang/Basic/Version.h],
+                  [], [AC_MSG_ERROR([Cannot find Clang development headers])])
   AC_CONFIG_FILES(clang-plugin/Makefile)
 fi
+
 if test "$with_gcc_plugin" != no; then
   AC_CONFIG_FILES(gcc-plugin/Makefile)
 fi
+
 if test "$with_llvm_plugin" != no; then
+  AC_PATH_PROG(LLVM_CONFIG, llvm-config)
+  if test -z "$ac_cv_path_LLVM_CONFIG"; then
+    AC_MSG_ERROR([Could not find llvm-config])
+  fi
+  AC_CHECK_HEADER([llvm/Pass.h],
+                  [], [AC_MSG_ERROR([Cannot find LLVM development headers])])
   AC_CONFIG_FILES(llvm-plugin/Makefile)
 fi
 

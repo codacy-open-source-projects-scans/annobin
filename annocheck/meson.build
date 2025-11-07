@@ -1,4 +1,4 @@
-# copyright : Copyright (C) 2017-2024 Red Hat.
+# copyright : Copyright (C) 2017-2025 Red Hat.
 # license   : GNU GPL v3 or later; see accompanying LICENSE file
 
 configure_file(
@@ -50,6 +50,9 @@ annocheck = executable(
     toplevel_incdir,
     gcc_plugin_incdir,
   ],
+  c_args: [
+    '-DHAVE_CONFIG_H',
+  ],
 )
 
 libannocheck = shared_library(
@@ -77,6 +80,7 @@ libannocheck = shared_library(
   ],
   c_args: [
     '-DLIBANNOCHECK=1',
+    '-DHAVE_CONFIG_H',
   ],
   include_directories: [
     toplevel_incdir,

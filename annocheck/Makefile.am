@@ -1,7 +1,9 @@
-# copyright : Copyright (C) 2017-2024 Red Hat.
+# copyright : Copyright (C) 2017-2025 Red Hat.
 # license   : GNU GPL v3 or later; see accompanying LICENSE file
 
 AM_CPPFLAGS = -I'$(top_builddir)' -I'$(top_srcdir)'
+AM_CFLAGS = '-Wshadow' '-Werror'
+
 AUTOMAKE_OPTIONS = no-dependencies subdir-objects
 
 tools   = hardened.c timing.c size.c notes.c built-by.c
@@ -24,11 +26,13 @@ libiberty = \
   libiberty/xstrdup.c
 
 libiberty_headers = \
+  libiberty/ansidecl.h \
   libiberty/demangle.h \
   libiberty/environ.h \
   libiberty/cp-demangle.h \
   libiberty/filenames.h \
   libiberty/hashtab.h \
+  libiberty/libiberty.h \
   libiberty/safe-ctype.h
 
 bin_PROGRAMS      = annocheck

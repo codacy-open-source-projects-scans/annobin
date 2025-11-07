@@ -6,6 +6,7 @@
 ## <http://www.gnu.org/licenses/>.
 
 # Man pages
+cmp = find_program('cmp')
 perl = find_program('perl')
 pod2man = find_program('pod2man')
 makeinfo = find_program('makeinfo')

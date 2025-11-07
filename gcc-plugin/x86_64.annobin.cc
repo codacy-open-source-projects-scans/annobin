@@ -63,7 +63,7 @@ annobin_save_target_specific_information (void)
 }
 
 static void
-record_ABI_note (unsigned long val, annobin_function_info * info)
+record_ABI_note (unsigned long val ATTRIBUTE_UNUSED, annobin_function_info * info ATTRIBUTE_UNUSED)
 {
 #if 0 /* Currently annocheck does nothing with x86_64 ABI note, so save space and do not generate it.  */
   annobin_inform (INFORM_VERBOSE, "x86_64: Record isa of %lx for %s",

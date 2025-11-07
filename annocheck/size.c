@@ -1,5 +1,5 @@
 /* Computes the cumulative size of section(s) in binary files. 
-   Copyright (C) 2018-2024 Red Hat.
+   Copyright (C) 2018-2025 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published
@@ -74,7 +74,7 @@ print_size (unsigned long long size)
 static bool sec_match;
 
 static bool
-size_start_file (annocheck_data * data)
+size_start_file (annocheck_data * data ATTRIBUTE_UNUSED)
 {
   if (disabled)
     return false;
@@ -182,7 +182,7 @@ size_interesting_seg (annocheck_data *     data,
 /* This function is needed so that a data transfer file will be created.  */
 
 static void
-size_start_scan (uint level, const char * datafile)
+size_start_scan (uint level, const char * datafile ATTRIBUTE_UNUSED)
 {
   if (level != 0)
     return;
@@ -231,19 +231,21 @@ size_end_scan (uint level, const char * datafile)
 	      einfo (WARN, "parsing data file: expected section %s found section %s",
 		     sec->name, name);
 	    }
+
+	  free ((void *) name);
 	}
 
       uint sec_count, seg_count;
-      unsigned long long sec_size, seg_size;
+      unsigned long long secsize, seg_size;
 
-      if (fscanf (f, "%u %llx %u %llx\n", & sec_count, & sec_size, & seg_count, & seg_size) != 4)
+      if (fscanf (f, "%u %llx %u %llx\n", & sec_count, & secsize, & seg_count, & seg_size) != 4)
 	{
 	  einfo (WARN, "Unable to locate section/segment flag size & counts");
 	}
       else
 	{
 	  sec_flag_match += sec_count;
-	  sec_flag_size += sec_size;
+	  sec_flag_size += secsize;
 	  seg_flag_match += seg_count;
 	  seg_flag_size += seg_size;
 	}
@@ -306,7 +308,7 @@ size_end_scan (uint level, const char * datafile)
       einfo (VERBOSE2, "Storing size data in %s", datafile);
 
       /* Write the accumulated sizes into the file.  */
-      FILE * f = fopen (datafile, "w");
+      f = fopen (datafile, "w");
 
       if (f == NULL)
 	{
@@ -328,7 +330,7 @@ size_end_scan (uint level, const char * datafile)
 }
 
 static bool
-size_process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
+size_process_arg (const char * arg, const char ** argv, const uint argc ATTRIBUTE_UNUSED, uint * next)
 {
   if (arg[0] == '-')
     ++ arg;
@@ -448,7 +450,8 @@ size_process_arg (const char * arg, const char ** argv, const uint argc, uint * 
 
   if (streq (arg, "enable-size") || streq (arg, "enable"))
     {
-      einfo (INFO, "Use --size-sec=<NAME> to enable the section size tool");
+      if (disabled)
+	einfo (INFO, "Use --size-sec=<NAME> to enable the section size tool");
       return true;
     }
 

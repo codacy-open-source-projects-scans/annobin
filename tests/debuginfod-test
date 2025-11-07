@@ -48,13 +48,15 @@ OPTS="$(rpm --eval '%undefine _annotated_build %build_cflags %build_ldflags')"
 if ! [[ $OPTS == *"redhat-hardened-cc1"* ]];
 then
     echo " $TEST_NAME: using built-in option selection instead"
-    OPTS="-O2 -fexceptions -flto -g -grecord-gcc-switches -Wall -Werror=format-security -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fPIE -fstack-protector-strong -fasynchronous-unwind-tables -fstack-clash-protection -Wl,-z,relro -Wl,--as-needed  -Wl,-z,now -pie"
+    OPTS="-O2 -fexceptions -flto -g -grecord-gcc-switches -Wall -Werror=format-security -Wp,-D_FORTIFY_SOURCE=2 -Wp,-D_GLIBCXX_ASSERTIONS -fPIE -fstack-protector-strong -fasynchronous-unwind-tables -fstack-clash-protection -Wl,-z,relro -Wl,--as-needed  -Wl,-z,now -pie -Wl,--build-id"
 fi
 
 # Now add in our newly built plugin.
 OPTS+=" -fplugin=$PLUGIN"
 
 start_test
+
+echo "Build command: $GCC $OPTS"
 
 $GCC $OPTS -c $srcdir/hello.c $srcdir/hello2.c $srcdir/hello3.c $srcdir/hello_lib.c
 $GCC hello.o hello2.o hello3.o hello_lib.o $OPTS -o debuginfod-test.exe
@@ -145,6 +147,8 @@ grep --silent \
      debuginfod-test.out
 if [ $? != 0 ]; then
   echo "$FAIL separate debuginfo not found:"
+  echo " "
+  echo "Test Log Contains:"
   cat debuginfod-test.out
   exit 1
 fi

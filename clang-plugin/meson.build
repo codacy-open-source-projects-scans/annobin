@@ -6,15 +6,21 @@ clang = find_program('clang++')
 search_dirs = run_command(clang , '--print-search-dirs', check: true).stdout().strip()
 install_dir = search_dirs.split('\n')[1].split(':')[1].replace('=', '').strip()
 
+# Use the default c++ compiler just to find if the needed libraries are
+# installed.
+cxx.find_library('LLVM')
+cxx.find_library('clang-cpp')
+
 clang_plugin = custom_target(
   'annobin-for-clang.so',
-  input: 'annobin.cpp',
+  input: ['annobin.cpp', '../annobin-common.cc'],
   output: 'annobin-for-clang.so',
   install: true,
   install_dir: install_dir,
   command: [
     clang,
     '@INPUT@',
+    '-I' + join_paths(meson.current_source_dir(), '..'),
     '-I' + join_paths(meson.current_build_dir(), '..'),
     '-lLLVM',
     '-lclang-cpp', # TODO: Is this correct?

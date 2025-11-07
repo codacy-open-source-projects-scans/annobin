@@ -32,7 +32,7 @@ $GAS --gdwarf-2 $srcdir/gap.S -o gap1.o
 # that annocheck will notice.
 
 pwd
-echo "compilation comnmand: $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC" 
+echo "compilation command: $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC" 
 
 $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC $srcdir/hello.c 
 $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC $srcdir/hello2.c 

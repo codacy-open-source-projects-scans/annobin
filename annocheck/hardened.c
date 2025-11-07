@@ -1,5 +1,5 @@
 /* Checks the hardened status of the given file.
-   Copyright (C) 2018-2024 Red Hat.
+   Copyright (C) 2018-2025 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published
@@ -30,7 +30,7 @@
 #define EM_RISCV 	243 	/* RISC-V */
 #endif
 #ifndef EM_BPF
-#define EM_BPF		247	/* Linux BPF -- in-kernel virtual machine */
+#define EM_BPF		247	/* Linux BPF -- in-kernel virtual machine.  */
 #endif
 
 #define HARDENED_CHECKER_NAME   "Hardened"
@@ -38,14 +38,15 @@
 /* Predefined names for all of the sources of information scanned by this checker.  */
 #define SOURCE_ANNOBIN_NOTES    "annobin notes"
 #define SOURCE_ANNOBIN_STRING_NOTES ANNOBIN_STRING_SECTION_NAME
-#define SOURCE_COMMENT_SECTION  "comment section"
+#define SOURCE_COMMENT_SECTION  ".comment section"
 #define SOURCE_DW_AT_LANGUAGE   "DW_AT_language string"
 #define SOURCE_DW_AT_PRODUCER   "DW_AT_producer string"
 #define SOURCE_DYNAMIC_SECTION  "dynamic section"
 #define SOURCE_DYNAMIC_SEGMENT  "dynamic segment"
 #define SOURCE_ELF_HEADER       "ELF header"
 #define SOURCE_FINAL_SCAN       "final scan"
-#define SOURCE_PROPERTY_NOTES   ".note.gnu.property"
+#define SOURCE_GO_BUILDINFO    ".go.buildinfo section"
+#define SOURCE_PROPERTY_NOTES   NOTE_GNU_PROPERTY_SECTION_NAME
 #define SOURCE_RODATA_SECTION   ".rodata section"
 #define SOURCE_SECTION_HEADERS  "section headers"
 #define SOURCE_SEGMENT_CONTENTS "segment contents"
@@ -71,6 +72,9 @@ static bool disabled = false;
 /* Can be changed by command line options.  */
 static bool fixed_format_messages = false;
 static bool enable_colour = true;
+static bool show_totals = true;
+static bool skip_passes = false;
+static bool allow_exceptions = true;
 
 typedef struct bool_option
 {
@@ -141,7 +145,7 @@ enum profile
   PROFILE_EL10,
 
   PROFILE_RAWHIDE,
-  PROFILE_F36,
+  PROFILE_FEDORA,
   PROFILE_F35,
 
   PROFILE_RHIVOS,
@@ -166,6 +170,10 @@ static struct per_file
   Elf64_Half  e_type;
   Elf64_Half  e_machine;
   Elf64_Addr  e_entry;
+
+  Elf64_Addr  prev_load_seg_addr;
+  Elf64_Xword prev_load_seg_size;
+  uint        prev_load_seg_number;
 
   ulong       text_section_name_index;
   ulong       text_section_alignment;
@@ -220,7 +228,11 @@ static struct per_file
   bool         has_module_license;
   bool         has_pie_flag;
   bool	       has_program_interpreter;
-  bool         has_property_note;
+  
+  bool         property_note_section_seen;
+  bool         property_note_is_good_set;
+  bool         property_note_is_good;
+  
   bool	       has_soname;
   bool	       has_symtab;
   bool         is_little_endian;
@@ -229,6 +241,7 @@ static struct per_file
   bool         not_branch_protection_pending_pass;
   bool         seen_annobin_plugin_in_dw_at_producer;
   bool         not_seen_annobin_plugin_in_dw_at_producer;
+  bool	       seen_bad_dw_at_producer;
   bool         seen_cgo_topofstack_sym;
   bool         seen_crypto_sym;
   bool         seen_engine;
@@ -243,7 +256,7 @@ static struct per_file
   bool         warned_asm_not_gcc;
   bool         warned_command_line;
   bool         warned_other_language;
-  bool         warned_strp_alt;
+  bool         warned_dw_at_producer;
   bool         warned_version_mismatch;
 } per_file;
 
@@ -275,9 +288,9 @@ enum test_state
 typedef struct test
 {
   bool	            enabled;	  /* If false then do not run this test.  */
+  bool              future;       /* True if this is a test to be enabled in the future.  */
   bool              set_by_user;  /* True if the ENABLED field has been set via a command line option.  */
   bool              result_announced;
-  bool              future;       /* True if this is a test to be enabled in the future.  */
   enum test_state   state;
   const char *      name;	  /* Also used as part of the command line option to disable the test.  */
   const char *      description;  /* Used in the --help output to describe the test.  */
@@ -306,6 +319,7 @@ enum test_index
   TEST_GO_REVISION,
   TEST_IMPLICIT_VALUES,
   TEST_INSTRUMENTATION,
+  TEST_LOAD_SEGMENTS,
   TEST_LTO,
   TEST_NOT_BRANCH_PROTECTION,
   TEST_NOT_DYNAMIC_TAGS,
@@ -318,7 +332,6 @@ enum test_index
   TEST_PROPERTY_NOTE,
   TEST_RHIVOS,
   TEST_RUN_PATH,
-  TEST_RWX_SEG,
   TEST_SHORT_ENUMS,
   TEST_STACK_CLASH,
   TEST_STACK_PROT,
@@ -337,17 +350,20 @@ enum test_index
 #define STR(a) #a
 #define MIN_GO_REV_STR(a,b,c) a STR(b) c
 
-#define TEST(name,upper,description)						\
-  [ TEST_##upper ] = { true, false, false, false, STATE_UNTESTED, #name, description, \
+#define TEST(name,upper,description)					\
+  /*                   enable, future, user?  told?  state */		\
+  [ TEST_##upper ] = { true,   false,  false, false, STATE_UNTESTED, #name, description,	\
     "https://sourceware.org/annobin/annobin.html/Test-" #name ".html" }
 
 #define FTEST(name,upper,description)						\
-  [ TEST_##upper ] = { false, false, false, true, STATE_UNTESTED, #name, description, \
+  /*                   enable, future, user?  told?  state */		\
+  [ TEST_##upper ] = { false,  true,   false, false, STATE_UNTESTED, #name, description, \
     "https://sourceware.org/annobin/annobin.html/Test-" #name ".html" }
 
 /* A test that is only enabled if a specific profile has been selected.  */
 #define PTEST(name,upper,description)						\
-  [ TEST_##upper ] = { false, false, false, false, STATE_UNTESTED, #name, description, \
+  /*                   enable, future, user?  told?  state */		\
+  [ TEST_##upper ] = { false,  false,  false, false, STATE_UNTESTED, #name, description, \
     "https://sourceware.org/annobin/annobin.html/Test-" #name ".html" }
 
 /* Array of tests to run.  Default to enabling them all.
@@ -372,6 +388,7 @@ static test tests [TEST_MAX] =
   TEST (go-revision,          GO_REVISION,        MIN_GO_REV_STR ("GO compiler revision >= ", MIN_GO_REVISION, " (go only)")),
   TEST (implicit-values,      IMPLICIT_VALUES,    "Compiled with -Wimplicit-int and -Wimplicit-function-declaration"),
   TEST (instrumentation,      INSTRUMENTATION,    "Compiled without code instrumentation"),
+  TEST (load-segments,        LOAD_SEGMENTS,      "Loadable program segments conform to requirements"),
   TEST (lto,                  LTO,                "Compiled with -flto"),
   TEST (not-branch-protection,  NOT_BRANCH_PROTECTION,  "Compiled without -mbranch-protection (AArch64 only, gcc 9+ only, RHEL-9"),
   TEST (not-dynamic-tags,     NOT_DYNAMIC_TAGS,   "Dynamic tags for PAC & BTI *not* present (AArch64 only, RHEL-9)"),
@@ -382,10 +399,9 @@ static test tests [TEST_MAX] =
   TEST (pic,                  PIC,                "All binaries must be compiled with -fPIC or -fPIE"),
   TEST (pie,                  PIE,                "Executables need to be compiled with -fPIE"),
   TEST (production,           PRODUCTION,         "Built by a production compiler, not an experimental one"),
-  TEST (property-note,        PROPERTY_NOTE,      "Correctly formatted GNU Property notes"),
+  TEST (property-note,        PROPERTY_NOTE,      "Correctly formatted GNU Property notes (x86_64, AArch64)"),
  PTEST (rhivos,               RHIVOS,             "Various RHIVOS specific tests"),
   TEST (run-path,             RUN_PATH,           "All runpath entries are secure"),
-  TEST (rwx-seg,              RWX_SEG,            "There are no segments that are both writable and executable"),
   TEST (short-enums,          SHORT_ENUMS,        "Compiled with consistent use of -fshort-enums"),
   TEST (stack-clash,          STACK_CLASH,        "Compiled with -fstack-clash-protection (not ARM)(not Clang)"),
   TEST (stack-prot,           STACK_PROT,         "Compiled with -fstack-protector-strong"),
@@ -524,13 +540,13 @@ get_filename (annocheck_data * data)
 static inline const char *
 get_formatted_component_name (const char * format)
 {
-  static char buffer[256];
+  static char buf[256];
 
   if (per_file.component_name == NULL)
     return "";
 
-  snprintf (buffer, sizeof buffer, format, per_file.component_name);
-  return buffer;
+  snprintf (buf, sizeof buf, format, per_file.component_name);
+  return buf;
 }
 
 static inline void
@@ -567,6 +583,19 @@ warn (annocheck_data * data, const char * message)
   einfo (PARTIAL, "WARN: %s", message);
 
   go_default_colour ();
+
+  einfo (PARTIAL, "\n");
+}
+
+static void
+info (annocheck_data * data, const char * message)
+{
+  if (fixed_format_messages)
+    return;
+
+  einfo (PARTIAL, "%s: %s: ", HARDENED_CHECKER_NAME, get_filename (data));
+
+  einfo (PARTIAL, "info: %s", message);
 
   einfo (PARTIAL, "\n");
 }
@@ -633,27 +662,27 @@ sanitize_filename (const char * name)
 static inline bool
 test_enabled (enum test_index check)
 {
-  struct test * test = tests + check;
+  struct test * t = tests + check;
   
   if (check >= TEST_MAX)
     return false;
 
-  if (test->future && ! enable_future_tests)
+  if (t->future && ! enable_future_tests)
     return false;
   
-  return test->enabled;
+  return t->enabled;
 }
 
 static inline bool
 skip_test (enum test_index check)
 {
-  struct test * test = tests + check;
+  struct test * t = tests + check;
 
   if (! test_enabled (check))
     /* We do not issue a SKIP message for disabled tests.  */
     return true;
 
-  if (test->state == STATE_FAILED || test->state == STATE_MAYBE)
+  if (t->state == STATE_FAILED || t->state == STATE_MAYBE)
     /* The test has already failed.  No need to test it again.  */
     return true;
 
@@ -666,19 +695,19 @@ skip_test (enum test_index check)
 static bool
 untested (enum test_index check)
 {
-  struct test * test = tests + check;
+  struct test * t = tests + check;
   
   if (! test_enabled (check))
     return false;
 
-  if (test->state == STATE_UNTESTED)
-    return true;
-
-  return false;
+  return (t->state == STATE_UNTESTED);
 }
 
 static void
-pass (annocheck_data * data, enum test_index testnum, const char * source, const char * reason)
+pass (annocheck_data *  data ATTRIBUTE_UNUSED,
+      enum test_index   testnum,
+      const char *      source,
+      const char *      reason)
 {
   assert (testnum < TEST_MAX);
 
@@ -697,6 +726,9 @@ pass (annocheck_data * data, enum test_index testnum, const char * source, const
     tests[testnum].state = STATE_PASSED;
 
   per_file.num_pass ++;
+
+  if (skip_passes)
+    return;
 
   tests[testnum].result_announced = true;
 
@@ -731,21 +763,24 @@ pass (annocheck_data * data, enum test_index testnum, const char * source, const
 }
 
 static void
-skip (annocheck_data * data, enum test_index testnum, const char * source, const char * reason)
+skip (annocheck_data *  data ATTRIBUTE_UNUSED,
+      enum test_index   testnum,
+      const char *      source,
+      const char *      reason)
 {
   assert (testnum < TEST_MAX);
 
-  test * test = tests + testnum;
+  test * t = tests + testnum;
 
   if (! test_enabled (testnum))
     return;
 
-  if (test->state == STATE_SKIPPED)
+  if (t->state == STATE_SKIPPED)
     return;
 
   per_file.num_skip ++;
 
-  test->state = STATE_SKIPPED;
+  t->state = STATE_SKIPPED;
 
 #ifdef LIBANNOCHECK
   libannocheck_record_test_skipped (testnum, source, reason);
@@ -757,7 +792,7 @@ skip (annocheck_data * data, enum test_index testnum, const char * source, const
     return;
 
   einfo (PARTIAL, "%s: %s: ", HARDENED_CHECKER_NAME, get_filename (data));
-  einfo (PARTIAL, "skip: %s test ", tests[testnum].name);
+  einfo (PARTIAL, "skip: %s test ", t->name);
   if (reason)
     einfo (PARTIAL, "because %s ", reason);
   if (BE_VERY_VERBOSE)
@@ -810,7 +845,9 @@ static const char * glibc_a_names[] =
 
 static const char * glibc_b_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
+  "base64.c",
   "blacklist_store_name",
+  "broken_cur_max.c",
   "btowc.c",
   "buffer_free"
 };
@@ -828,6 +865,8 @@ static const char * glibc_c_names[] =
   "cleanup_compat.c",
   "cleanup_compat.c",
   "cmp.c",
+  "compat-gethnamaddr.c",
+  "compat-hooks.c",
   "ctype-info.c",
   "cxa_atexit.c"
 };
@@ -840,26 +879,41 @@ static const char * glibc_d_names[] =
   "divrem.c",
   "dl-addr-obj.c",
   "dl-addr.c",
+  "dl-audit.c",
+  "dl-brk.c",
   "dl-cache.c",
   "dl-call-libc-early-init.c",
   "dl-call_fini.c",
   "dl-catch.c",
   "dl-cet.c",
   "dl-close.c",
+  "dl-compat.c",
   "dl-debug.c",
   "dl-deps.c",
+  "dl-diagnostics-cpu.c",
+  "dl-diagnostics-kernel.c",
+  "dl-diagnostics.c",
+  "dl-environ.c",
   "dl-exception.c",
   "dl-find_object.c",
+  "dl-fini.c",
+  "dl-hwcaps-subdirs.c",
+  "dl-hwcaps.c",
+  "dl-hwcaps_split.c",
   "dl-init.c",
   "dl-iteratephdr.c",
   "dl-libc.c",
+  "dl-libc_freeres.c",
   "dl-load.c",
   "dl-lookup-direct.c",
   "dl-lookup.c",
+  "dl-minimal-malloc.c",
+  "dl-minimal.c",
   "dl-misc.c",
   "dl-object.c",
   "dl-open.c",
   "dl-printf.c",
+  "dl-profile.c",
   "dl-reloc-static-pie.c",
   "dl-reloc.c",
   "dl-runtime.c",
@@ -870,7 +924,9 @@ static const char * glibc_d_names[] =
   "dl-sym.c",
   "dl-tls.c",
   "dl-tunables.c",
+  "dl-usage.c",
   "dl-version.c",
+  "dl-write.c",
   "dladdr.c",
   "dladdr1.c",
   "dlclose.c",
@@ -883,6 +939,7 @@ static const char * glibc_d_names[] =
   "dlvsym.c",
   "dn_expand.c",
   "dn_skipname.c",
+  "dso_handle.c",
   "dynarray_at_failure.c",
   "dynarray_emplace_enlarge.c"
 };
@@ -906,6 +963,7 @@ static const char * glibc_e_names[] =
 static const char * glibc_f_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
   "feraiseexcept",
+  "fetestexceptflag.c",
   "fgetgrent_r.c",
   "fgetpwent_r.c",
   "file_change_detection.c",
@@ -957,6 +1015,7 @@ static const char * glibc_g_names[] =
   "getpwuid_r.c",
   "getsrvbynm_r.c",
   "global-locale.c",
+  "gmon-start.c",
   "group_member.c",
   "grouping.c",
   "grouping_iterator.c"
@@ -966,6 +1025,7 @@ static const char * glibc_h_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
   "handle_zhaoxin",
   "hash-string.c",
+  "hesiod.c",
   "hosts-lookup.c"
 };
 
@@ -977,7 +1037,12 @@ static const char * glibc_i_names[] =
   "inet_addr.c",
   "inet_mkadr.c",
   "inet_net.c",
+  "inet_net_ntop.c",
+  "inet_net_pton.c",
+  "inet_neta.c",
+  "inet_ntop_chk.c",
   "inet_pton.c",
+  "inet_pton_chk.c",
   "init-first.c",
   "init-misc.c",
   "init.c",
@@ -1012,6 +1077,7 @@ static const char * glibc_j_names[] =
 
 static const char * glibc_k_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
+  "k_sincosl.c"
 };
 
 static const char * glibc_l_names[] =
@@ -1020,10 +1086,14 @@ static const char * glibc_l_names[] =
   "lc-ctype.c",
   "lc-numeric.c",
   "lc-time-cleanup.c",
+  "libanl-compat.c",
   "libc-cleanup.c",
   "libc-tls.c",
   "libc_dlerror_result.c",
   "libc_early_init.c",
+  "libdl-compat.c",
+  "libpthread-compat.c",
+  "libutil-compat.c",
   "loadarchive.c",
   "loadlocale.c",
   "loadmsgcat.c",
@@ -1038,6 +1108,7 @@ static const char * glibc_l_names[] =
 
 static const char * glibc_m_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
+  "malloc-debug.c",
   "malloc.c",
   "matherr",
   "mbrlen.c",
@@ -1050,6 +1121,7 @@ static const char * glibc_m_names[] =
   "memmove_chk.c",
   "mempcpy_chk.c",
   "memset_chk.c",
+  "memusage.c",
   "mp_clz_tab.c",  
   "mul.c",
   "mul_1.c",
@@ -1064,7 +1136,9 @@ static const char * glibc_n_names[] =
   "nptl_free_tcb.c",
   "nptl_nthreads.c",
   "nptl_setxid.c",
+  "ns_date.c",
   "ns_makecanon.c",
+  "ns_name.c",
   "ns_name_compress.c",
   "ns_name_length_uncompressed.c",
   "ns_name_ntop.c",
@@ -1073,13 +1147,22 @@ static const char * glibc_n_names[] =
   "ns_name_skip.c",
   "ns_name_uncompress.c",
   "ns_name_unpack.c",
+  "ns_netint.c",
+  "ns_parse.c",
+  "ns_print.c",
   "ns_rr_cursor_init.c",
   "ns_rr_cursor_next.c",
   "ns_samebinaryname.c",
+  "ns_samedomain.c",
   "ns_samename.c",
+  "ns_ttl.c",
   "nss_action.c",
   "nss_action_parse.c",
+  "nss_compat/compat-grp.c",
+  "nss_compat/compat-pwd.c",
   "nss_database.c",
+  "nss_db/db-initgroups.c",
+  "nss_db/db-netgrp.c",
   "nss_dns/dns-canon.c",
   "nss_dns/dns-host.c",
   "nss_dns/dns-network.c",
@@ -1101,6 +1184,7 @@ static const char * glibc_n_names[] =
   "nss_files_data.c",
   "nss_files_fopen.c",
   "nss_files_functions.c",
+  "nss_hesiod/hesiod-grp.c",
   "nss_module.c",
   "nss_parse_line_result.c",
   "nss_readline.c",
@@ -1114,6 +1198,7 @@ static const char * glibc_o_names[] =
 
 static const char * glibc_p_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
+  "pcprofile.c",
   "plural-exp.c",
   "printf-parsemb.c",
   "printf-parsewc.c",
@@ -1145,6 +1230,7 @@ static const char * glibc_p_names[] =
   "pthread_getattr_default_np.c",
   "pthread_getattr_np.c",
   "pthread_getspecific.c",
+  "pthread_gettid_np,c",
   "pthread_join.c",
   "pthread_join_common.c",
   "pthread_key_create.c",
@@ -1183,11 +1269,16 @@ static const char * glibc_r_names[] =
   "res-close.c",
   "res-name-checking.c",
   "res-noaaaa.c",
+  "res-putget.c",
   "res_context_hostalias.c",
+  "res_data.c",
+  "res_debug.c",
   "res_enable_icmp.c",
   "res_get_nsaddr.c",
   "res_hconf.c",
+  "res_hostalias.c",
   "res_init.c",
+  "res_isourserver.c",
   "res_libc.c",
   "res_mkquery.c",
   "res_nameinquery.c",
@@ -1195,18 +1286,25 @@ static const char * glibc_r_names[] =
   "res_query.c",
   "res_randomid.c",
   "res_send.c",
+  "resolv-deprecated.c",
   "resolv_conf.c",
   "resolv_context.c",
   "rewind.c",
   "rshift.c",
+  "rtld.c",
   "rtld_lock_default_lock_recursive",
   "rtld_static_init.c"
 };
 
 static const char * glibc_s_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
+  "s_iscanonicall.c",
+  "s_nextafter.c",
+  "s_nexttowardl.c",
   "sbrk.c",
   "sched_cpucount.c",
+  "sched_getaddr.c",
+  "sched_setattr.c",
   "scratch_buffer_grow.c",
   "scratch_buffer_grow_preserve.c",
   "scratch_buffer_set_array_size.c",
@@ -1244,6 +1342,7 @@ static const char * glibc_s_names[] =
   "strcasecmp_l.c",
   "strcspn.c",
   "strdup.c",
+  "strerrorname_np.c",
   "strncase.c",
   "strncase_l.c",
   "strncpy.c",
@@ -1269,7 +1368,9 @@ static const char * glibc_s_names[] =
 static const char * glibc_t_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
   "td_init",
+  "td_init.c",
   "td_log",
+  "td_log.c",
   "td_ta_map_lwp2thr",
   "td_thr_validate",
   "tens_in_limb.c",
@@ -1300,6 +1401,91 @@ static const char * glibc_v_names[] =
 
 static const char * glibc_w_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
+  "w_acos_compat.c",
+  "w_acosf_compat.c",
+  "w_acosh_compat.c",
+  "w_acoshf_compat.c",
+  "w_acoshl_compat.c",
+  "w_acosl_compat.c",
+  "w_asin_compat.c",
+  "w_asinf_compat.c",
+  "w_asinl_compat.c",
+  "w_atan2_compat.c",
+  "w_atan2f_compat.c",
+  "w_atan2l_compat.c",
+  "w_atanh_compat.c",
+  "w_atanhf_compat.c",
+  "w_atanhl_compat.c",
+  "w_cosh_compat.c",
+  "w_coshf_compat.c",
+  "w_coshl_compat.c",
+  "w_exp10_compat.c",
+  "w_exp10f.c",
+  "w_exp10f_compat.c",
+  "w_exp10l_compat.c",
+  "w_exp2_compat.c",
+  "w_exp2f_compat.c",
+  "w_exp2l_compat.c",
+  "w_exp_compat.c",
+  "w_expf_compat.c",
+  "w_expl_compat.c",
+  "w_fmod_compat.c",
+  "w_fmodf_compat.c",
+  "w_fmodl_compat.c",
+  "w_hypot_compat.c",
+  "w_hypotf_compat.c",
+  "w_hypotl_compat.c",
+  "w_j0_compat.c",
+  "w_j0f_compat.c",
+  "w_j0l_compat.c",
+  "w_j1_compat.c",
+  "w_j1f_compat.c",
+  "w_j1l_compat.c",
+  "w_jn_compat.c",
+  "w_jnf_compat.c",
+  "w_jnl_compat.c",
+  "w_lgamma.c",
+  "w_lgamma_compat.c",
+  "w_lgamma_compat2.c",
+  "w_lgamma_compatf.c",
+  "w_lgamma_compatl.c",
+  "w_lgamma_r_compat.c",
+  "w_lgammaf.c",
+  "w_lgammaf_compat2.c",
+  "w_lgammaf_r_compat.c",
+  "w_lgammal.c",
+  "w_lgammal_compat2.c",
+  "w_lgammal_r_compat.c",
+  "w_log10_compat.c",
+  "w_log10f_compat.c",
+  "w_log10l_compat.c",
+  "w_log2_compat.c",
+  "w_log2f_compat.c",
+  "w_log2l_compat.c",
+  "w_log_compat.c",
+  "w_logf_compat.c",
+  "w_logl_compat.c",
+  "w_pow_compat.c",
+  "w_powf_compat.c",
+  "w_powl_compat.c",
+  "w_remainder.c",
+  "w_remainder_compat.c",
+  "w_remainderf.c",
+  "w_remainderf_compat.c",
+  "w_remainderl.c",
+  "w_remainderl_compat.c",
+  "w_scalb_compat.c",
+  "w_scalbf_compat.c",
+  "w_scalbl_compat.c",
+  "w_sinh_compat.c",
+  "w_sinhf_compat.c",
+  "w_sinhl_compat.c",
+  "w_sqrt_compat.c",
+  "w_sqrtf_compat.c",
+  "w_sqrtl_compat.c",
+  "w_tgamma_compat.c",
+  "w_tgammaf_compat.c",
+  "w_tgammal_compat.c",
   "waitpid.c",
   "wcrtomb.c",
   "wcschrnul.c",
@@ -1333,6 +1519,8 @@ static const char * glibc_x_names[] =
 
 static const char * glibc_y_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
+  "yp_xdr.c",
+  "ypclnt.c"
 };
 
 static const char * glibc_z_names[] =
@@ -1343,6 +1531,36 @@ static const char * glibc_z_names[] =
 static const char * glibc_X_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
   "../sysdeps/aarch64/dl-bti.c",
+  "../sysdeps/aarch64/e_sqrtl.c",
+  "../sysdeps/aarch64/fpu/acosf_advsimd.c",
+  "../sysdeps/aarch64/fpu/asinf_advsimd.c",
+  "../sysdeps/aarch64/fpu/fclrexcpt.c",
+  "../sysdeps/aarch64/fpu/fedisblxcpt.c",
+  "../sysdeps/aarch64/fpu/feenablxcpt.c",
+  "../sysdeps/aarch64/fpu/fegetenv.c",
+  "../sysdeps/aarch64/fpu/fegetexcept.c",
+  "../sysdeps/aarch64/fpu/fegetmode.c",
+  "../sysdeps/aarch64/fpu/fegetround.c",
+  "../sysdeps/aarch64/fpu/feholdexcpt.c",
+  "../sysdeps/aarch64/fpu/fesetenv.c",
+  "../sysdeps/aarch64/fpu/fesetexcept.c",
+  "../sysdeps/aarch64/fpu/fesetmode.c",
+  "../sysdeps/aarch64/fpu/fesetround.c",
+  "../sysdeps/aarch64/fpu/feupdateenv.c",
+  "../sysdeps/aarch64/fpu/fgetexcptflg.c",
+  "../sysdeps/aarch64/fpu/fraiseexcpt.c",
+  "../sysdeps/aarch64/fpu/fsetexcptflg.c",
+  "../sysdeps/aarch64/fpu/ftestexcept.c",
+  "../sysdeps/aarch64/fpu/s_llrint.c",
+  "../sysdeps/aarch64/fpu/s_llrintf.c",
+  "../sysdeps/aarch64/fpu/s_llround.c",
+  "../sysdeps/aarch64/fpu/s_llroundf.c",
+  "../sysdeps/aarch64/fpu/s_lrint.c",
+  "../sysdeps/aarch64/fpu/s_lrintf.c",
+  "../sysdeps/aarch64/fpu/s_lround.c",
+  "../sysdeps/aarch64/fpu/s_lroundf.c",
+  "../sysdeps/aarch64/fpu/s_roundeven.c",
+  "../sysdeps/aarch64/fpu/s_roundevenf.c",
   "../sysdeps/aarch64/libc-start.c",
   "../sysdeps/aarch64/libc-tls.c",
   "../sysdeps/aarch64/multiarch/memchr.c",
@@ -1354,30 +1572,574 @@ static const char * glibc_X_names[] =
   "../sysdeps/aarch64/multiarch/strlen.c",
   "../sysdeps/aarch64/multiarch/strlen.c:__strlen_ifunc",
   "../sysdeps/aarch64/tlsdesc.c",
+  "../sysdeps/generic/unwind-resume.c",
+  "../sysdeps/generic/unwind-resume.c",
+  "../sysdeps/gnu/rt-unwind-resume.c",
+  "../sysdeps/ieee754/dbl-64/branred.c",
   "../sysdeps/ieee754/dbl-64/dbl2mpn.c",
+  "../sysdeps/ieee754/dbl-64/e_acos.c",
+  "../sysdeps/ieee754/dbl-64/e_acosh.c",
+  "../sysdeps/ieee754/dbl-64/e_asin.c",
+  "../sysdeps/ieee754/dbl-64/e_atan2.c",
+  "../sysdeps/ieee754/dbl-64/e_atanh.c",
+  "../sysdeps/ieee754/dbl-64/e_cosh.c",
+  "../sysdeps/ieee754/dbl-64/e_exp.c",
+  "../sysdeps/ieee754/dbl-64/e_exp10.c",
+  "../sysdeps/ieee754/dbl-64/e_exp2.c",
+  "../sysdeps/ieee754/dbl-64/e_exp_data.c",
+  "../sysdeps/ieee754/dbl-64/e_fmod.c",
+  "../sysdeps/ieee754/dbl-64/e_gamma_r.c",
+  "../sysdeps/ieee754/dbl-64/e_hypot.c",
+  "../sysdeps/ieee754/dbl-64/e_ilogb.c",
+  "../sysdeps/ieee754/dbl-64/e_j0.c",
+  "../sysdeps/ieee754/dbl-64/e_j1.c",
+  "../sysdeps/ieee754/dbl-64/e_jn.c",
+  "../sysdeps/ieee754/dbl-64/e_lgamma_r.c",
+  "../sysdeps/ieee754/dbl-64/e_log.c",
+  "../sysdeps/ieee754/dbl-64/e_log10.c",
+  "../sysdeps/ieee754/dbl-64/e_log2.c",
+  "../sysdeps/ieee754/dbl-64/e_log2_data.c",
+  "../sysdeps/ieee754/dbl-64/e_log_data.c",
+  "../sysdeps/ieee754/dbl-64/e_pow.c",
+  "../sysdeps/ieee754/dbl-64/e_pow_log_data.c",
+  "../sysdeps/ieee754/dbl-64/e_remainder.c",
+  "../sysdeps/ieee754/dbl-64/e_sinh.c",
+  "../sysdeps/ieee754/dbl-64/e_sqrt.c",
+  "../sysdeps/ieee754/dbl-64/gamma_product.c",
+  "../sysdeps/ieee754/dbl-64/gamma_productf.c",
+  "../sysdeps/ieee754/dbl-64/k_rem_pio2.c",
+  "../sysdeps/ieee754/dbl-64/k_tan.c",
+  "../sysdeps/ieee754/dbl-64/lgamma_neg.c",
+  "../sysdeps/ieee754/dbl-64/lgamma_product.c",
+  "../sysdeps/ieee754/dbl-64/math_err.c",
   "../sysdeps/ieee754/dbl-64/mpn2dbl.c",
+  "../sysdeps/ieee754/dbl-64/s_asinh.c",
+  "../sysdeps/ieee754/dbl-64/s_atan.c",
+  "../sysdeps/ieee754/dbl-64/s_cbrt.c",
+  "../sysdeps/ieee754/dbl-64/s_ceil.c",
+  "../sysdeps/ieee754/dbl-64/s_cos.c",
+  "../sysdeps/ieee754/dbl-64/s_erf.c",
+  "../sysdeps/ieee754/dbl-64/s_expm1.c",
+  "../sysdeps/ieee754/dbl-64/s_f32xaddf64.c",
+  "../sysdeps/ieee754/dbl-64/s_f32xdivf64.c",
+  "../sysdeps/ieee754/dbl-64/s_f32xfmaf64.c",
+  "../sysdeps/ieee754/dbl-64/s_f32xmulf64.c",
+  "../sysdeps/ieee754/dbl-64/s_f32xsqrtf64.c",
+  "../sysdeps/ieee754/dbl-64/s_f32xsubf64.c",
+  "../sysdeps/ieee754/dbl-64/s_fabs.c",
+  "../sysdeps/ieee754/dbl-64/s_fadd.c",
+  "../sysdeps/ieee754/dbl-64/s_fdiv.c",
+  "../sysdeps/ieee754/dbl-64/s_ffma.c",
+  "../sysdeps/ieee754/dbl-64/s_floor.c",
+  "../sysdeps/ieee754/dbl-64/s_fma.c",
+  "../sysdeps/ieee754/dbl-64/s_fmaf.c",
+  "../sysdeps/ieee754/dbl-64/s_fmul.c",
+  "../sysdeps/ieee754/dbl-64/s_fpclassify.c",
+  "../sysdeps/ieee754/dbl-64/s_fromfp.c",
+  "../sysdeps/ieee754/dbl-64/s_fromfpx.c",
+  "../sysdeps/ieee754/dbl-64/s_fsqrt.c",
+  "../sysdeps/ieee754/dbl-64/s_fsub.c",
+  "../sysdeps/ieee754/dbl-64/s_getpayload.c",
+  "../sysdeps/ieee754/dbl-64/s_issignaling.c",
+  "../sysdeps/ieee754/dbl-64/s_llround.c",
+  "../sysdeps/ieee754/dbl-64/s_log1p.c",
+  "../sysdeps/ieee754/dbl-64/s_logb.c",
+  "../sysdeps/ieee754/dbl-64/s_lround.c",
+  "../sysdeps/ieee754/dbl-64/s_nearbyint.c",
+  "../sysdeps/ieee754/dbl-64/s_nextup.c",
+  "../sysdeps/ieee754/dbl-64/s_remquo.c",
+  "../sysdeps/ieee754/dbl-64/s_rint.c",
+  "../sysdeps/ieee754/dbl-64/s_round.c",
+  "../sysdeps/ieee754/dbl-64/s_roundeven.c",
+  "../sysdeps/ieee754/dbl-64/s_scalbln.c",
+  "../sysdeps/ieee754/dbl-64/s_setpayload.c",
+  "../sysdeps/ieee754/dbl-64/s_setpayloadsig.c",
+  "../sysdeps/ieee754/dbl-64/s_sin.c",
+  "../sysdeps/ieee754/dbl-64/s_sincos.c",
+  "../sysdeps/ieee754/dbl-64/s_tan.c",
+  "../sysdeps/ieee754/dbl-64/s_tanh.c",
+  "../sysdeps/ieee754/dbl-64/s_totalorder.c",
+  "../sysdeps/ieee754/dbl-64/s_totalordermag.c",
+  "../sysdeps/ieee754/dbl-64/s_trunc.c",
+  "../sysdeps/ieee754/dbl-64/s_ufromfp.c",
+  "../sysdeps/ieee754/dbl-64/s_ufromfpx.c",
+  "../sysdeps/ieee754/dbl-64/sincostab.c",
+  "../sysdeps/ieee754/dbl-64/w_exp.c",
+  "../sysdeps/ieee754/dbl-64/w_exp10.c",
+  "../sysdeps/ieee754/dbl-64/w_exp2.c",
+  "../sysdeps/ieee754/dbl-64/w_fmod.c",
+  "../sysdeps/ieee754/dbl-64/w_hypot.c",
+  "../sysdeps/ieee754/dbl-64/w_log.c",
+  "../sysdeps/ieee754/dbl-64/w_log2.c",
+  "../sysdeps/ieee754/dbl-64/w_pow.c",
+  "../sysdeps/ieee754/dbl-64/x2y2m1.c",
+  "../sysdeps/ieee754/dbl-64/x2y2m1f.c",
+  "../sysdeps/ieee754/float128/e_acosf128.c",
+  "../sysdeps/ieee754/float128/e_acoshf128.c",
+  "../sysdeps/ieee754/float128/e_asinf128.c",
+  "../sysdeps/ieee754/float128/e_atan2f128.c",
+  "../sysdeps/ieee754/float128/e_atanhf128.c",
+  "../sysdeps/ieee754/float128/e_coshf128.c",
+  "../sysdeps/ieee754/float128/e_exp10f128.c",
+  "../sysdeps/ieee754/float128/e_expf128.c",
+  "../sysdeps/ieee754/float128/e_fmodf128.c",
+  "../sysdeps/ieee754/float128/e_gammaf128_r.c",
+  "../sysdeps/ieee754/float128/e_hypotf128.c",
+  "../sysdeps/ieee754/float128/e_ilogbf128.c",
+  "../sysdeps/ieee754/float128/e_j0f128.c",
+  "../sysdeps/ieee754/float128/e_j1f128.c",
+  "../sysdeps/ieee754/float128/e_jnf128.c",
+  "../sysdeps/ieee754/float128/e_lgammaf128_r.c",
+  "../sysdeps/ieee754/float128/e_log10f128.c",
+  "../sysdeps/ieee754/float128/e_log2f128.c",
+  "../sysdeps/ieee754/float128/e_logf128.c",
+  "../sysdeps/ieee754/float128/e_powf128.c",
+  "../sysdeps/ieee754/float128/e_rem_pio2f128.c",
+  "../sysdeps/ieee754/float128/e_remainderf128.c",
+  "../sysdeps/ieee754/float128/e_scalbf128.c",
+  "../sysdeps/ieee754/float128/e_sinhf128.c",
   "../sysdeps/ieee754/float128/float1282mpn.c",
+  "../sysdeps/ieee754/float128/gamma_productf128.c",
+  "../sysdeps/ieee754/float128/k_cosf128.c",
+  "../sysdeps/ieee754/float128/k_sincosf128.c",
+  "../sysdeps/ieee754/float128/k_sinf128.c",
+  "../sysdeps/ieee754/float128/k_tanf128.c",
+  "../sysdeps/ieee754/float128/lgamma_negf128.c",
+  "../sysdeps/ieee754/float128/lgamma_productf128.c",
   "../sysdeps/ieee754/float128/mpn2float128.c",
+  "../sysdeps/ieee754/float128/s_asinhf128.c",
+  "../sysdeps/ieee754/float128/s_atanf128.c",
+  "../sysdeps/ieee754/float128/s_cbrtf128.c",
+  "../sysdeps/ieee754/float128/s_ceilf128.c",
+  "../sysdeps/ieee754/float128/s_cosf128.c",
+  "../sysdeps/ieee754/float128/s_erff128.c",
+  "../sysdeps/ieee754/float128/s_expm1f128.c",
+  "../sysdeps/ieee754/float128/s_f32addf128.c",
+  "../sysdeps/ieee754/float128/s_f32divf128.c",
+  "../sysdeps/ieee754/float128/s_f32fmaf128.c",
+  "../sysdeps/ieee754/float128/s_f32mulf128.c",
+  "../sysdeps/ieee754/float128/s_f32sqrtf128.c",
+  "../sysdeps/ieee754/float128/s_f32subf128.c",
+  "../sysdeps/ieee754/float128/s_f64addf128.c",
+  "../sysdeps/ieee754/float128/s_f64divf128.c",
+  "../sysdeps/ieee754/float128/s_f64fmaf128.c",
+  "../sysdeps/ieee754/float128/s_f64mulf128.c",
+  "../sysdeps/ieee754/float128/s_f64sqrtf128.c",
+  "../sysdeps/ieee754/float128/s_f64subf128.c",
+  "../sysdeps/ieee754/float128/s_f64xaddf128.c",
+  "../sysdeps/ieee754/float128/s_f64xdivf128.c",
+  "../sysdeps/ieee754/float128/s_f64xfmaf128.c",
+  "../sysdeps/ieee754/float128/s_f64xmulf128.c",
+  "../sysdeps/ieee754/float128/s_f64xsqrtf128.c",
+  "../sysdeps/ieee754/float128/s_f64xsubf128.c",
+  "../sysdeps/ieee754/float128/s_fabsf128.c",
+  "../sysdeps/ieee754/float128/s_floorf128.c",
+  "../sysdeps/ieee754/float128/s_fmaf128.c",
+  "../sysdeps/ieee754/float128/s_fpclassifyf128.c",
+  "../sysdeps/ieee754/float128/s_fromfpf128.c",
+  "../sysdeps/ieee754/float128/s_fromfpxf128.c",
+  "../sysdeps/ieee754/float128/s_getpayloadf128.c",
+  "../sysdeps/ieee754/float128/s_issignalingf128.c",
+  "../sysdeps/ieee754/float128/s_llrintf128.c",
+  "../sysdeps/ieee754/float128/s_llroundf128.c",
+  "../sysdeps/ieee754/float128/s_log1pf128.c",
+  "../sysdeps/ieee754/float128/s_logbf128.c",
+  "../sysdeps/ieee754/float128/s_lrintf128.c",
+  "../sysdeps/ieee754/float128/s_lroundf128.c",
+  "../sysdeps/ieee754/float128/s_nearbyintf128.c",
+  "../sysdeps/ieee754/float128/s_nextafterf128.c",
+  "../sysdeps/ieee754/float128/s_nexttowardf128.c",
+  "../sysdeps/ieee754/float128/s_nextupf128.c",
+  "../sysdeps/ieee754/float128/s_remquof128.c",
+  "../sysdeps/ieee754/float128/s_rintf128.c",
+  "../sysdeps/ieee754/float128/s_roundevenf128.c",
+  "../sysdeps/ieee754/float128/s_roundf128.c",
+  "../sysdeps/ieee754/float128/s_scalblnf128.c",
+  "../sysdeps/ieee754/float128/s_setpayloadf128.c",
+  "../sysdeps/ieee754/float128/s_setpayloadsigf128.c",
+  "../sysdeps/ieee754/float128/s_significandf128.c",
+  "../sysdeps/ieee754/float128/s_sincosf128.c",
+  "../sysdeps/ieee754/float128/s_sinf128.c",
+  "../sysdeps/ieee754/float128/s_tanf128.c",
+  "../sysdeps/ieee754/float128/s_tanhf128.c",
+  "../sysdeps/ieee754/float128/s_totalorderf128.c",
+  "../sysdeps/ieee754/float128/s_totalordermagf128.c",
+  "../sysdeps/ieee754/float128/s_truncf128.c",
+  "../sysdeps/ieee754/float128/s_ufromfpf128.c",
+  "../sysdeps/ieee754/float128/s_ufromfpxf128.c",
   "../sysdeps/ieee754/float128/strtof128_nan.c",
+  "../sysdeps/ieee754/float128/t_sincosf128.c",
+  "../sysdeps/ieee754/float128/w_scalbf128.c",
+  "../sysdeps/ieee754/float128/x2y2m1f128.c",
+  "../sysdeps/ieee754/flt-32/e_acosf.c",
+  "../sysdeps/ieee754/flt-32/e_acoshf.c",
+  "../sysdeps/ieee754/flt-32/e_asinf.c",
+  "../sysdeps/ieee754/flt-32/e_atan2f.c",
+  "../sysdeps/ieee754/flt-32/e_atanhf.c",
+  "../sysdeps/ieee754/flt-32/e_coshf.c",
+  "../sysdeps/ieee754/flt-32/e_exp10f.c",
+  "../sysdeps/ieee754/flt-32/e_exp2f.c",
+  "../sysdeps/ieee754/flt-32/e_exp2f_data.c",
+  "../sysdeps/ieee754/flt-32/e_expf.c",
+  "../sysdeps/ieee754/flt-32/e_fmodf.c",
+  "../sysdeps/ieee754/flt-32/e_gammaf_r.c",
+  "../sysdeps/ieee754/flt-32/e_hypotf.c",
+  "../sysdeps/ieee754/flt-32/e_ilogbf.c",
+  "../sysdeps/ieee754/flt-32/e_j0f.c",
+  "../sysdeps/ieee754/flt-32/e_j1f.c",
+  "../sysdeps/ieee754/flt-32/e_jnf.c",
+  "../sysdeps/ieee754/flt-32/e_lgammaf_r.c",
+  "../sysdeps/ieee754/flt-32/e_log10f.c",
+  "../sysdeps/ieee754/flt-32/e_log2f.c",
+  "../sysdeps/ieee754/flt-32/e_log2f_data.c",
+  "../sysdeps/ieee754/flt-32/e_logf.c",
+  "../sysdeps/ieee754/flt-32/e_logf_data.c",
+  "../sysdeps/ieee754/flt-32/e_powf.c",
+  "../sysdeps/ieee754/flt-32/e_powf_log2_data.c",
+  "../sysdeps/ieee754/flt-32/e_remainderf.c",
+  "../sysdeps/ieee754/flt-32/e_sinhf.c",
+  "../sysdeps/ieee754/flt-32/e_sqrtf.c",
+  "../sysdeps/ieee754/flt-32/k_tanf.c",
+  "../sysdeps/ieee754/flt-32/lgamma_negf.c",
+  "../sysdeps/ieee754/flt-32/lgamma_productf.c",
+  "../sysdeps/ieee754/flt-32/math_errf.c",
   "../sysdeps/ieee754/flt-32/mpn2flt.c",
+  "../sysdeps/ieee754/flt-32/s_asinhf.c",
+  "../sysdeps/ieee754/flt-32/s_atanf.c",
+  "../sysdeps/ieee754/flt-32/s_cbrtf.c",
+  "../sysdeps/ieee754/flt-32/s_ceilf.c",
+  "../sysdeps/ieee754/flt-32/s_cosf.c",
+  "../sysdeps/ieee754/flt-32/s_erff.c",
+  "../sysdeps/ieee754/flt-32/s_expm1f.c",
+  "../sysdeps/ieee754/flt-32/s_fabsf.c",
+  "../sysdeps/ieee754/flt-32/s_floorf.c",
+  "../sysdeps/ieee754/flt-32/s_fpclassifyf.c",
+  "../sysdeps/ieee754/flt-32/s_fromfpf.c",
+  "../sysdeps/ieee754/flt-32/s_fromfpxf.c",
+  "../sysdeps/ieee754/flt-32/s_getpayloadf.c",
+  "../sysdeps/ieee754/flt-32/s_issignalingf.c",
+  "../sysdeps/ieee754/flt-32/s_llroundf.c",
+  "../sysdeps/ieee754/flt-32/s_log1pf.c",
+  "../sysdeps/ieee754/flt-32/s_logbf.c",
+  "../sysdeps/ieee754/flt-32/s_lroundf.c",
+  "../sysdeps/ieee754/flt-32/s_nearbyintf.c",
+  "../sysdeps/ieee754/flt-32/s_nextafterf.c",
+  "../sysdeps/ieee754/flt-32/s_nextupf.c",
+  "../sysdeps/ieee754/flt-32/s_remquof.c",
+  "../sysdeps/ieee754/flt-32/s_rintf.c",
+  "../sysdeps/ieee754/flt-32/s_roundevenf.c",
+  "../sysdeps/ieee754/flt-32/s_roundf.c",
+  "../sysdeps/ieee754/flt-32/s_scalblnf.c",
+  "../sysdeps/ieee754/flt-32/s_setpayloadf.c",
+  "../sysdeps/ieee754/flt-32/s_setpayloadsigf.c",
+  "../sysdeps/ieee754/flt-32/s_sincosf.c",
+  "../sysdeps/ieee754/flt-32/s_sincosf_data.c",
+  "../sysdeps/ieee754/flt-32/s_sinf.c",
+  "../sysdeps/ieee754/flt-32/s_tanf.c",
+  "../sysdeps/ieee754/flt-32/s_tanhf.c",
+  "../sysdeps/ieee754/flt-32/s_totalorderf.c",
+  "../sysdeps/ieee754/flt-32/s_totalordermagf.c",
+  "../sysdeps/ieee754/flt-32/s_truncf.c",
+  "../sysdeps/ieee754/flt-32/s_ufromfpf.c",
+  "../sysdeps/ieee754/flt-32/s_ufromfpxf.c",
+  "../sysdeps/ieee754/flt-32/w_exp2f.c",
+  "../sysdeps/ieee754/flt-32/w_expf.c",
+  "../sysdeps/ieee754/flt-32/w_fmodf.c",
+  "../sysdeps/ieee754/flt-32/w_hypotf.c",
+  "../sysdeps/ieee754/flt-32/w_log2f.c",
+  "../sysdeps/ieee754/flt-32/w_logf.c",
+  "../sysdeps/ieee754/flt-32/w_powf.c",
+  "../sysdeps/ieee754/k_standard.c",
+  "../sysdeps/ieee754/k_standardf.c",
+  "../sysdeps/ieee754/k_standardl.c",
+  "../sysdeps/ieee754/ldbl-128/e_acoshl.c",
+  "../sysdeps/ieee754/ldbl-128/e_acosl.c",
+  "../sysdeps/ieee754/ldbl-128/e_asinl.c",
+  "../sysdeps/ieee754/ldbl-128/e_atan2l.c",
+  "../sysdeps/ieee754/ldbl-128/e_atanhl.c",
+  "../sysdeps/ieee754/ldbl-128/e_coshl.c",
+  "../sysdeps/ieee754/ldbl-128/e_exp10l.c",
+  "../sysdeps/ieee754/ldbl-128/e_expl.c",
+  "../sysdeps/ieee754/ldbl-128/e_fmodl.c",
+  "../sysdeps/ieee754/ldbl-128/e_gammal_r.c",
+  "../sysdeps/ieee754/ldbl-128/e_hypotl.c",
+  "../sysdeps/ieee754/ldbl-128/e_ilogbl.c",
+  "../sysdeps/ieee754/ldbl-128/e_j0l.c",
+  "../sysdeps/ieee754/ldbl-128/e_j1l.c",
+  "../sysdeps/ieee754/ldbl-128/e_jnl.c",
+  "../sysdeps/ieee754/ldbl-128/e_lgammal_r.c",
+  "../sysdeps/ieee754/ldbl-128/e_log10l.c",
+  "../sysdeps/ieee754/ldbl-128/e_log2l.c",
+  "../sysdeps/ieee754/ldbl-128/e_logl.c",
+  "../sysdeps/ieee754/ldbl-128/e_powl.c",
+  "../sysdeps/ieee754/ldbl-128/e_rem_pio2l.c",
+  "../sysdeps/ieee754/ldbl-128/e_remainderl.c",
+  "../sysdeps/ieee754/ldbl-128/e_sinhl.c",
+  "../sysdeps/ieee754/ldbl-128/gamma_productl.c",
+  "../sysdeps/ieee754/ldbl-128/k_cosl.c",
+  "../sysdeps/ieee754/ldbl-128/k_sincosl.c",
+  "../sysdeps/ieee754/ldbl-128/k_sinl.c",
+  "../sysdeps/ieee754/ldbl-128/k_tanl.c",
   "../sysdeps/ieee754/ldbl-128/ldbl2mpn.c",
+  "../sysdeps/ieee754/ldbl-128/lgamma_negl.c",
+  "../sysdeps/ieee754/ldbl-128/lgamma_productl.c",
   "../sysdeps/ieee754/ldbl-128/mpn2ldbl.c",
   "../sysdeps/ieee754/ldbl-128/printf_fphex.c",
+  "../sysdeps/ieee754/ldbl-128/s_asinhl.c",
+  "../sysdeps/ieee754/ldbl-128/s_atanl.c",
+  "../sysdeps/ieee754/ldbl-128/s_cbrtl.c",
+  "../sysdeps/ieee754/ldbl-128/s_ceill.c",
+  "../sysdeps/ieee754/ldbl-128/s_cosl.c",
+  "../sysdeps/ieee754/ldbl-128/s_daddl.c",
+  "../sysdeps/ieee754/ldbl-128/s_ddivl.c",
+  "../sysdeps/ieee754/ldbl-128/s_dfmal.c",
+  "../sysdeps/ieee754/ldbl-128/s_dmull.c",
+  "../sysdeps/ieee754/ldbl-128/s_dsqrtl.c",
+  "../sysdeps/ieee754/ldbl-128/s_dsubl.c",
+  "../sysdeps/ieee754/ldbl-128/s_erfl.c",
+  "../sysdeps/ieee754/ldbl-128/s_expm1l.c",
+  "../sysdeps/ieee754/ldbl-128/s_f64xaddf128.c",
+  "../sysdeps/ieee754/ldbl-128/s_f64xdivf128.c",
+  "../sysdeps/ieee754/ldbl-128/s_f64xfmaf128.c",
+  "../sysdeps/ieee754/ldbl-128/s_f64xmulf128.c",
+  "../sysdeps/ieee754/ldbl-128/s_f64xsqrtf128.c",
+  "../sysdeps/ieee754/ldbl-128/s_f64xsubf128.c",
+  "../sysdeps/ieee754/ldbl-128/s_fabsl.c",
+  "../sysdeps/ieee754/ldbl-128/s_faddl.c",
+  "../sysdeps/ieee754/ldbl-128/s_fdivl.c",
+  "../sysdeps/ieee754/ldbl-128/s_ffmal.c",
+  "../sysdeps/ieee754/ldbl-128/s_floorl.c",
+  "../sysdeps/ieee754/ldbl-128/s_fma.c",
+  "../sysdeps/ieee754/ldbl-128/s_fmal.c",
+  "../sysdeps/ieee754/ldbl-128/s_fmull.c",
+  "../sysdeps/ieee754/ldbl-128/s_fpclassifyl.c",
+  "../sysdeps/ieee754/ldbl-128/s_fromfpl.c",
+  "../sysdeps/ieee754/ldbl-128/s_fromfpxl.c",
+  "../sysdeps/ieee754/ldbl-128/s_fsqrtl.c",
+  "../sysdeps/ieee754/ldbl-128/s_fsubl.c",
+  "../sysdeps/ieee754/ldbl-128/s_getpayloadl.c",
+  "../sysdeps/ieee754/ldbl-128/s_isinfl.c",
+  "../sysdeps/ieee754/ldbl-128/s_issignalingl.c",
+  "../sysdeps/ieee754/ldbl-128/s_llrintl.c",
+  "../sysdeps/ieee754/ldbl-128/s_llroundl.c",
+  "../sysdeps/ieee754/ldbl-128/s_log1pl.c",
+  "../sysdeps/ieee754/ldbl-128/s_logbl.c",
+  "../sysdeps/ieee754/ldbl-128/s_lrintl.c",
+  "../sysdeps/ieee754/ldbl-128/s_lroundl.c",
+  "../sysdeps/ieee754/ldbl-128/s_nearbyintl.c",
+  "../sysdeps/ieee754/ldbl-128/s_nextafterl.c",
+  "../sysdeps/ieee754/ldbl-128/s_nexttoward.c",
+  "../sysdeps/ieee754/ldbl-128/s_nexttowardf.c",
+  "../sysdeps/ieee754/ldbl-128/s_nextupl.c",
+  "../sysdeps/ieee754/ldbl-128/s_remquol.c",
+  "../sysdeps/ieee754/ldbl-128/s_rintl.c",
+  "../sysdeps/ieee754/ldbl-128/s_roundevenl.c",
+  "../sysdeps/ieee754/ldbl-128/s_roundl.c",
+  "../sysdeps/ieee754/ldbl-128/s_scalblnl.c",
+  "../sysdeps/ieee754/ldbl-128/s_setpayloadl.c",
+  "../sysdeps/ieee754/ldbl-128/s_setpayloadsigl.c",
+  "../sysdeps/ieee754/ldbl-128/s_sincosl.c",
+  "../sysdeps/ieee754/ldbl-128/s_sinl.c",
+  "../sysdeps/ieee754/ldbl-128/s_tanhl.c",
+  "../sysdeps/ieee754/ldbl-128/s_tanl.c",
+  "../sysdeps/ieee754/ldbl-128/s_totalorderl.c",
+  "../sysdeps/ieee754/ldbl-128/s_totalordermagl.c",
+  "../sysdeps/ieee754/ldbl-128/s_truncl.c",
+  "../sysdeps/ieee754/ldbl-128/s_ufromfpl.c",
+  "../sysdeps/ieee754/ldbl-128/s_ufromfpxl.c",
   "../sysdeps/ieee754/ldbl-128/strtold_l.c",
+  "../sysdeps/ieee754/ldbl-128/t_sincosl.c",
+  "../sysdeps/ieee754/ldbl-128/x2y2m1l.c",
+  "../sysdeps/ieee754/ldbl-128ibm-compat/e_scalbf128.c",
   "../sysdeps/ieee754/ldbl-128ibm-compat/ieee128-asprintf.c",
   "../sysdeps/ieee754/ldbl-128ibm-compat/ieee128-asprintf_chk.c",
   "../sysdeps/ieee754/ldbl-128ibm-compat/ieee128-fprintf_chk.c",
   "../sysdeps/ieee754/ldbl-128ibm-compat/ieee128-isoc23_sscanf.c",
   "../sysdeps/ieee754/ldbl-128ibm-compat/ieee128-snprintf.c",
   "../sysdeps/ieee754/ldbl-128ibm-compat/ieee128-sprintf_chk.c",
+  "../sysdeps/ieee754/ldbl-128ibm-compat/s_nextafterf128.c",
+  "../sysdeps/ieee754/ldbl-128ibm-compat/s_nexttowardf128.c",
+  "../sysdeps/ieee754/ldbl-128ibm-compat/s_significandf128.c",
   "../sysdeps/ieee754/ldbl-128ibm-compat/strtof128.c",
   "../sysdeps/ieee754/ldbl-128ibm-compat/strtof128_l.c",
+  "../sysdeps/ieee754/ldbl-128ibm-compat/w_scalbf128.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_acoshl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_acosl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_asinl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_atan2l.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_atanhl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_coshl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_exp10l.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_expl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_fmodl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_gammal_r.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_hypotl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_ilogbl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_j0l.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_j1l.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_jnl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_lgammal_r.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_log10l.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_log2l.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_logl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_powl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_rem_pio2l.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_remainderl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_sinhl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/e_sqrtl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/gamma_productl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/k_cosl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/k_sincosl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/k_sinl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/k_tanl.c",
   "../sysdeps/ieee754/ldbl-128ibm/ldbl2mpn.c",
+  "../sysdeps/ieee754/ldbl-128ibm/lgamma_negl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/lgamma_productl.c",
   "../sysdeps/ieee754/ldbl-128ibm/mpn2ldbl.c",
   "../sysdeps/ieee754/ldbl-128ibm/printf_fphex.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_asinhl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_atanl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_cbrtl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_ceill.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_cosl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_daddl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_ddivl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_dfmal.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_dmull.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_dsqrtl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_dsubl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_erfl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_expm1l.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_fabsl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_faddl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_fdivl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_ffmal.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_floorl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_fmal.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_fmull.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_fpclassifyl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_fromfpl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_fromfpxl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_fsqrtl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_fsubl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_getpayloadl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_iscanonicall.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_isinfl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_issignalingl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_llrintl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_llroundl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_log1pl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_lrintl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_lroundl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_nearbyintl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_nextafterl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_nexttoward.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_nexttowardf.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_nextupl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_remquol.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_rintl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_roundevenl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_roundl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_scalblnl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_setpayloadl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_setpayloadsigl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_sincosl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_sinl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_tanhl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_tanl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_totalorderl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_totalordermagl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_truncl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_ufromfpl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/s_ufromfpxl.c",
   "../sysdeps/ieee754/ldbl-128ibm/strtold_l.c",
+  "../sysdeps/ieee754/ldbl-128ibm/t_sincosl.c",
+  "../sysdeps/ieee754/ldbl-128ibm/x2y2m1l.c",
+  "../sysdeps/ieee754/ldbl-64-128/s_fpclassifyl.c",
+  "../sysdeps/ieee754/ldbl-64-128/s_nextafterl.c",
+  "../sysdeps/ieee754/ldbl-64-128/s_nexttoward.c",
+  "../sysdeps/ieee754/ldbl-64-128/s_nexttowardf.c",
   "../sysdeps/ieee754/ldbl-64-128/strtold_l.c",
+  "../sysdeps/ieee754/ldbl-96/e_acoshl.c",
+  "../sysdeps/ieee754/ldbl-96/e_asinl.c",
+  "../sysdeps/ieee754/ldbl-96/e_atanhl.c",
+  "../sysdeps/ieee754/ldbl-96/e_coshl.c",
+  "../sysdeps/ieee754/ldbl-96/e_gammal_r.c",
+  "../sysdeps/ieee754/ldbl-96/e_hypotl.c",
+  "../sysdeps/ieee754/ldbl-96/e_j0l.c",
+  "../sysdeps/ieee754/ldbl-96/e_j1l.c",
+  "../sysdeps/ieee754/ldbl-96/e_jnl.c",
+  "../sysdeps/ieee754/ldbl-96/e_lgammal_r.c",
+  "../sysdeps/ieee754/ldbl-96/e_rem_pio2l.c",
+  "../sysdeps/ieee754/ldbl-96/e_sinhl.c",
+  "../sysdeps/ieee754/ldbl-96/gamma_product.c",
+  "../sysdeps/ieee754/ldbl-96/gamma_productl.c",
+  "../sysdeps/ieee754/ldbl-96/k_cosl.c",
+  "../sysdeps/ieee754/ldbl-96/k_sinl.c",
+  "../sysdeps/ieee754/ldbl-96/k_tanl.c",
+  "../sysdeps/ieee754/ldbl-96/lgamma_negl.c",
+  "../sysdeps/ieee754/ldbl-96/lgamma_product.c",
+  "../sysdeps/ieee754/ldbl-96/lgamma_productl.c",
+  "../sysdeps/ieee754/ldbl-96/s_asinhl.c",
+  "../sysdeps/ieee754/ldbl-96/s_cbrtl.c",
+  "../sysdeps/ieee754/ldbl-96/s_cosl.c",
+  "../sysdeps/ieee754/ldbl-96/s_daddl.c",
+  "../sysdeps/ieee754/ldbl-96/s_ddivl.c",
+  "../sysdeps/ieee754/ldbl-96/s_dfmal.c",
+  "../sysdeps/ieee754/ldbl-96/s_dmull.c",
+  "../sysdeps/ieee754/ldbl-96/s_dsqrtl.c",
+  "../sysdeps/ieee754/ldbl-96/s_dsubl.c",
+  "../sysdeps/ieee754/ldbl-96/s_erfl.c",
+  "../sysdeps/ieee754/ldbl-96/s_fabsl.c",
+  "../sysdeps/ieee754/ldbl-96/s_faddl.c",
+  "../sysdeps/ieee754/ldbl-96/s_fdivl.c",
+  "../sysdeps/ieee754/ldbl-96/s_ffmal.c",
+  "../sysdeps/ieee754/ldbl-96/s_fmal.c",
+  "../sysdeps/ieee754/ldbl-96/s_fmull.c",
+  "../sysdeps/ieee754/ldbl-96/s_fromfpl.c",
+  "../sysdeps/ieee754/ldbl-96/s_fromfpxl.c",
+  "../sysdeps/ieee754/ldbl-96/s_fsqrtl.c",
+  "../sysdeps/ieee754/ldbl-96/s_fsubl.c",
+  "../sysdeps/ieee754/ldbl-96/s_getpayloadl.c",
+  "../sysdeps/ieee754/ldbl-96/s_iscanonicall.c",
+  "../sysdeps/ieee754/ldbl-96/s_issignalingl.c",
+  "../sysdeps/ieee754/ldbl-96/s_llroundl.c",
+  "../sysdeps/ieee754/ldbl-96/s_lroundl.c",
+  "../sysdeps/ieee754/ldbl-96/s_nextupl.c",
+  "../sysdeps/ieee754/ldbl-96/s_remquol.c",
+  "../sysdeps/ieee754/ldbl-96/s_roundevenl.c",
+  "../sysdeps/ieee754/ldbl-96/s_roundl.c",
+  "../sysdeps/ieee754/ldbl-96/s_scalblnl.c",
+  "../sysdeps/ieee754/ldbl-96/s_setpayloadl.c",
+  "../sysdeps/ieee754/ldbl-96/s_setpayloadsigl.c",
+  "../sysdeps/ieee754/ldbl-96/s_sincosl.c",
+  "../sysdeps/ieee754/ldbl-96/s_sinl.c",
+  "../sysdeps/ieee754/ldbl-96/s_tanhl.c",
+  "../sysdeps/ieee754/ldbl-96/s_tanl.c",
+  "../sysdeps/ieee754/ldbl-96/s_totalorderl.c",
+  "../sysdeps/ieee754/ldbl-96/s_totalordermagl.c",
+  "../sysdeps/ieee754/ldbl-96/s_ufromfpl.c",
+  "../sysdeps/ieee754/ldbl-96/s_ufromfpxl.c",
+  "../sysdeps/ieee754/ldbl-96/t_sincosl.c",
+  "../sysdeps/ieee754/ldbl-96/x2y2m1.c",
+  "../sysdeps/ieee754/ldbl-96/x2y2m1l.c",
+  "../sysdeps/ieee754/ldbl-opt/s_clog10.c",
+  "../sysdeps/ieee754/ldbl-opt/s_clog10l.c",
+  "../sysdeps/ieee754/ldbl-opt/s_nextafter.c",
+  "../sysdeps/ieee754/ldbl-opt/s_nexttowardfd.c",
+  "../sysdeps/ieee754/ldbl-opt/w_exp10_compat.c",
+  "../sysdeps/ieee754/ldbl-opt/w_exp10l_compat.c",
+  "../sysdeps/ieee754/ldbl-opt/w_lgamma_compat.c",
+  "../sysdeps/ieee754/ldbl-opt/w_lgamma_compatl.c",
+  "../sysdeps/ieee754/ldbl-opt/w_remainder_compat.c",
+  "../sysdeps/ieee754/ldbl-opt/w_remainderl_compat.c",
+  "../sysdeps/ieee754/ldbl-opt/w_scalb_compat.c",
+  "../sysdeps/ieee754/ldbl-opt/w_scalbl_compat.c",
+  "../sysdeps/ieee754/s_lib_version.c",
+  "../sysdeps/ieee754/s_matherr.c",
+  "../sysdeps/ieee754/s_signgam.c",
   "../sysdeps/nptl/_Fork.c",
+  "../sysdeps/nptl/dl-mutex.c",
   "../sysdeps/nptl/dl-thread_gscope_wait.c",
   "../sysdeps/nptl/dl-tls_init_tp.c",
   "../sysdeps/nptl/jmp-unwind.c",
@@ -1387,12 +2149,65 @@ static const char * glibc_X_names[] =
   "../sysdeps/posix/raise.c",
   "../sysdeps/posix/signal.c",
   "../sysdeps/powerpc/dl-tls.c",
+  "../sysdeps/powerpc/fpu/e_sqrt.c",
+  "../sysdeps/powerpc/fpu/e_sqrtf.c",
+  "../sysdeps/powerpc/fpu/fclrexcpt.c",
+  "../sysdeps/powerpc/fpu/fedisblxcpt.c",
+  "../sysdeps/powerpc/fpu/feenablxcpt.c",
+  "../sysdeps/powerpc/fpu/fegetenv.c",
+  "../sysdeps/powerpc/fpu/fegetexcept.c",
+  "../sysdeps/powerpc/fpu/fegetmode.c",
+  "../sysdeps/powerpc/fpu/fegetround.c",
+  "../sysdeps/powerpc/fpu/feholdexcpt.c",
+  "../sysdeps/powerpc/fpu/fenv_const.c",
+  "../sysdeps/powerpc/fpu/fesetenv.c",
+  "../sysdeps/powerpc/fpu/fesetexcept.c",
+  "../sysdeps/powerpc/fpu/fesetmode.c",
+  "../sysdeps/powerpc/fpu/fesetround.c",
+  "../sysdeps/powerpc/fpu/feupdateenv.c",
+  "../sysdeps/powerpc/fpu/fgetexcptflg.c",
+  "../sysdeps/powerpc/fpu/fraiseexcpt.c",
+  "../sysdeps/powerpc/fpu/fsetexcptflg.c",
+  "../sysdeps/powerpc/fpu/ftestexcept.c",
+  "../sysdeps/powerpc/fpu/s_ceil.c",
+  "../sysdeps/powerpc/fpu/s_ceilf.c",
+  "../sysdeps/powerpc/fpu/s_floor.c",
+  "../sysdeps/powerpc/fpu/s_floorf.c",
+  "../sysdeps/powerpc/fpu/s_logb.c",
+  "../sysdeps/powerpc/fpu/s_logbf.c",
+  "../sysdeps/powerpc/fpu/s_logbl.c",
+  "../sysdeps/powerpc/fpu/s_lrintf.c",
+  "../sysdeps/powerpc/fpu/s_nearbyint.c",
+  "../sysdeps/powerpc/fpu/s_nearbyintf.c",
+  "../sysdeps/powerpc/fpu/s_rint.c",
+  "../sysdeps/powerpc/fpu/s_rintf.c",
+  "../sysdeps/powerpc/fpu/s_round.c",
+  "../sysdeps/powerpc/fpu/s_roundf.c",
+  "../sysdeps/powerpc/fpu/s_trunc.c",
+  "../sysdeps/powerpc/fpu/s_truncf.c",
+  "../sysdeps/powerpc/fpu/t_sqrt.c",
   "../sysdeps/powerpc/hwcapinfo.c",
   "../sysdeps/powerpc/libc-tls.c",
   "../sysdeps/powerpc/longjmp.c",
   "../sysdeps/powerpc/power4/wordcopy.c",
   "../sysdeps/powerpc/power4/wordcopy.c",
   "../sysdeps/powerpc/powerpc64/dl-machine.c",
+  "../sysdeps/powerpc/powerpc64/fpu/s_llrint.c",
+  "../sysdeps/powerpc/powerpc64/fpu/s_llrintf.c",
+  "../sysdeps/powerpc/powerpc64/fpu/s_llround.c",
+  "../sysdeps/powerpc/powerpc64/fpu/s_llroundf.c",
+  "../sysdeps/powerpc/powerpc64/fpu/s_lrint.c",
+  "../sysdeps/powerpc/powerpc64/fpu/s_lround.c",
+  "../sysdeps/powerpc/powerpc64/fpu/s_lroundf.c",
+  "../sysdeps/powerpc/powerpc64/le/dl-hwcaps-subdirs.c",
+  "../sysdeps/powerpc/powerpc64/le/fpu/e_sqrtf128.c",
+  "../sysdeps/powerpc/powerpc64/le/fpu/multiarch/e_log-power10.c",
+  "../sysdeps/powerpc/powerpc64/le/fpu/multiarch/e_log-ppc64.c",
+  "../sysdeps/powerpc/powerpc64/le/fpu/multiarch/e_log.c",
+  "../sysdeps/powerpc/powerpc64/le/fpu/multiarch/e_log.c:__ieee754_log_ifunc",
+  "../sysdeps/powerpc/powerpc64/le/fpu/multiarch/w_log.c",
+  "../sysdeps/powerpc/powerpc64/le/fpu/w_ilogbl.c",
+  "../sysdeps/powerpc/powerpc64/le/fpu/w_llogbl.c",
   "../sysdeps/powerpc/powerpc64/multiarch/memchr-ppc64.c",
   "../sysdeps/powerpc/powerpc64/multiarch/memchr.c",
   "../sysdeps/powerpc/powerpc64/multiarch/memchr.c:__memchr_ifunc",
@@ -1404,6 +2219,7 @@ static const char * glibc_X_names[] =
   "../sysdeps/powerpc/powerpc64/multiarch/memrchr-ppc64.c",
   "../sysdeps/powerpc/powerpc64/multiarch/memrchr.c",
   "../sysdeps/powerpc/powerpc64/multiarch/memrchr.c:memrchr_ifunc",
+  "../sysdeps/powerpc/powerpc64/multiarch/rtld-memset.c",
   "../sysdeps/powerpc/powerpc64/multiarch/stpcpy.c",
   "../sysdeps/powerpc/powerpc64/multiarch/strcasecmp-ppc64.c",
   "../sysdeps/powerpc/powerpc64/multiarch/strcasecmp_l.c",
@@ -1439,6 +2255,39 @@ static const char * glibc_X_names[] =
   "../sysdeps/powerpc/sigjmp.c",
   "../sysdeps/pthread/pthread_atfork.c",
   "../sysdeps/s390/dl-procinfo-s390.c",
+  "../sysdeps/s390/fpu/e_sqrtl.c",
+  "../sysdeps/s390/fpu/fclrexcpt.c",
+  "../sysdeps/s390/fpu/fedisblxcpt.c",
+  "../sysdeps/s390/fpu/feenablxcpt.c",
+  "../sysdeps/s390/fpu/fegetenv.c",
+  "../sysdeps/s390/fpu/fegetexcept.c",
+  "../sysdeps/s390/fpu/fegetmode.c",
+  "../sysdeps/s390/fpu/fegetround.c",
+  "../sysdeps/s390/fpu/feholdexcpt.c",
+  "../sysdeps/s390/fpu/fesetenv.c",
+  "../sysdeps/s390/fpu/fesetexcept.c",
+  "../sysdeps/s390/fpu/fesetmode.c",
+  "../sysdeps/s390/fpu/fesetround.c",
+  "../sysdeps/s390/fpu/feupdateenv.c",
+  "../sysdeps/s390/fpu/fgetexcptflg.c",
+  "../sysdeps/s390/fpu/fraiseexcpt.c",
+  "../sysdeps/s390/fpu/fsetexcptflg.c",
+  "../sysdeps/s390/fpu/ftestexcept.c",
+  "../sysdeps/s390/fpu/s_llrint.c",
+  "../sysdeps/s390/fpu/s_llrintf.c",
+  "../sysdeps/s390/fpu/s_llrintl.c",
+  "../sysdeps/s390/fpu/s_llround.c",
+  "../sysdeps/s390/fpu/s_llroundf.c",
+  "../sysdeps/s390/fpu/s_llroundl.c",
+  "../sysdeps/s390/fpu/s_lrint.c",
+  "../sysdeps/s390/fpu/s_lrintf.c",
+  "../sysdeps/s390/fpu/s_lrintl.c",
+  "../sysdeps/s390/fpu/s_lround.c",
+  "../sysdeps/s390/fpu/s_lroundf.c",
+  "../sysdeps/s390/fpu/s_lroundl.c",
+  "../sysdeps/s390/fpu/s_roundeven.c",
+  "../sysdeps/s390/fpu/s_roundevenf.c",
+  "../sysdeps/s390/fpu/s_roundevenl.c",
   "../sysdeps/s390/libc-start.c",
   "../sysdeps/s390/libc-tls.c",
   "../sysdeps/s390/longjmp.c",
@@ -1447,6 +2296,7 @@ static const char * glibc_X_names[] =
   "../sysdeps/s390/memmem.c:__memmem_ifunc",
   "../sysdeps/s390/multiarch/gconv_simple.c",
   "../sysdeps/s390/s390-64/__longjmp.c",
+  "../sysdeps/s390/s390-64/dl-hwcaps-subdirs.c",
   "../sysdeps/s390/strstr-vx.c",
   "../sysdeps/s390/strstr.c",
   "../sysdeps/s390/strstr.c:strstr_ifunc",
@@ -1462,6 +2312,7 @@ static const char * glibc_X_names[] =
   "../sysdeps/unix/sysv/linux/aarch64/sysconf.c",
   "../sysdeps/unix/sysv/linux/aarch64/sysdep.c",
   "../sysdeps/unix/sysv/linux/accept4.c",
+  "../sysdeps/unix/sysv/linux/access.c",
   "../sysdeps/unix/sysv/linux/bind.c",
   "../sysdeps/unix/sysv/linux/brk.c",
   "../sysdeps/unix/sysv/linux/check_native.c",
@@ -1478,9 +2329,16 @@ static const char * glibc_X_names[] =
   "../sysdeps/unix/sysv/linux/closefrom_fallback.c",
   "../sysdeps/unix/sysv/linux/connect.c",
   "../sysdeps/unix/sysv/linux/dirfd.c",
+  "../sysdeps/unix/sysv/linux/dl-diagnostics-kernel.c",
   "../sysdeps/unix/sysv/linux/dl-early_allocate.c",
   "../sysdeps/unix/sysv/linux/dl-execstack.c",
+  "../sysdeps/unix/sysv/linux/dl-getcwd.c",
+  "../sysdeps/unix/sysv/linux/dl-openat64.c",
+  "../sysdeps/unix/sysv/linux/dl-opendir.c",
   "../sysdeps/unix/sysv/linux/dl-origin.c",
+  "../sysdeps/unix/sysv/linux/dl-sbrk.c",
+  "../sysdeps/unix/sysv/linux/dl-sysdep.c",
+  "../sysdeps/unix/sysv/linux/dl-write.c",
   "../sysdeps/unix/sysv/linux/dup2.c",
   "../sysdeps/unix/sysv/linux/faccessat.c",
   "../sysdeps/unix/sysv/linux/fcntl64.c",
@@ -1509,6 +2367,7 @@ static const char * glibc_X_names[] =
   "../sysdeps/unix/sysv/linux/lchown.c",
   "../sysdeps/unix/sysv/linux/libc_fatal.c",
   "../sysdeps/unix/sysv/linux/libc_sigaction.c",
+  "../sysdeps/unix/sysv/linux/librt-compat.c",
   "../sysdeps/unix/sysv/linux/listen.c",
   "../sysdeps/unix/sysv/linux/lseek64.c",
   "../sysdeps/unix/sysv/linux/lstat64.c",
@@ -1530,6 +2389,9 @@ static const char * glibc_X_names[] =
   "../sysdeps/unix/sysv/linux/powerpc/elision-trylock.c",
   "../sysdeps/unix/sysv/linux/powerpc/elision-unlock.c",
   "../sysdeps/unix/sysv/linux/powerpc/libc-start.c",
+  "../sysdeps/unix/sysv/linux/powerpc/libpthread-compat.c",
+  "../sysdeps/unix/sysv/linux/powerpc/powerpc64/fpu/fe_mask.c",
+  "../sysdeps/unix/sysv/linux/powerpc/powerpc64/fpu/fe_nomask.c",
   "../sysdeps/unix/sysv/linux/powerpc/pthread_attr_setstacksize.c",
   "../sysdeps/unix/sysv/linux/powerpc/sysconf.c",
   "../sysdeps/unix/sysv/linux/powerpc/sysdep.c",
@@ -1537,6 +2399,8 @@ static const char * glibc_X_names[] =
   "../sysdeps/unix/sysv/linux/pread64.c",
   "../sysdeps/unix/sysv/linux/pread64_nocancel.c",
   "../sysdeps/unix/sysv/linux/preadv64.c",
+  "../sysdeps/unix/sysv/linux/prof-freq.c",
+  "../sysdeps/unix/sysv/linux/profil.c",
   "../sysdeps/unix/sysv/linux/pwrite64.c",
   "../sysdeps/unix/sysv/linux/pwritev64.c",
   "../sysdeps/unix/sysv/linux/read.c",
@@ -1556,6 +2420,7 @@ static const char * glibc_X_names[] =
   "../sysdeps/unix/sysv/linux/s390/elision-trylock.c",
   "../sysdeps/unix/sysv/linux/s390/elision-unlock.c",
   "../sysdeps/unix/sysv/linux/s390/jmp-unwind.c",
+  "../sysdeps/unix/sysv/linux/s390/libpthread-compat.c",
   "../sysdeps/unix/sysv/linux/s390/sysconf.c",
   "../sysdeps/unix/sysv/linux/sched_getaffinity.c",
   "../sysdeps/unix/sysv/linux/send.c",
@@ -1565,6 +2430,7 @@ static const char * glibc_X_names[] =
   "../sysdeps/unix/sysv/linux/sendto.c",
   "../sysdeps/unix/sysv/linux/setgid.c",
   "../sysdeps/unix/sysv/linux/setgroups.c",
+  "../sysdeps/unix/sysv/linux/setitimer.c",
   "../sysdeps/unix/sysv/linux/setsockopt.c",
   "../sysdeps/unix/sysv/linux/setuid.c",
   "../sysdeps/unix/sysv/linux/setvmaname.c",
@@ -1591,10 +2457,82 @@ static const char * glibc_X_names[] =
   "../sysdeps/wordsize-64/strtoul.c",
   "../sysdeps/wordsize-64/strtoul_l.c",
   "../sysdeps/x86/abi-note.c",
+  "../sysdeps/x86/fpu/e_sqrtf128.c",
+  "../sysdeps/x86/fpu/e_sqrtl.c",
+  "../sysdeps/x86/fpu/powl_helper.c",
+  "../sysdeps/x86/fpu/s_ffma.c",
+  "../sysdeps/x86/fpu/s_fpclassifyl.c",
+  "../sysdeps/x86/fpu/s_sincosf_data.c",
   "../sysdeps/x86/libc-start.c",
   "../sysdeps/x86_64/crti.S",
   "../sysdeps/x86_64/dl-cet.c",
   "../sysdeps/x86_64/dl-tls.c",
+  "../sysdeps/x86_64/fpu/e_acosl.c",
+  "../sysdeps/x86_64/fpu/e_atan2l.c",
+  "../sysdeps/x86_64/fpu/fclrexcpt.c",
+  "../sysdeps/x86_64/fpu/fedisblxcpt.c",
+  "../sysdeps/x86_64/fpu/feenablxcpt.c",
+  "../sysdeps/x86_64/fpu/fegetenv.c",
+  "../sysdeps/x86_64/fpu/fegetexcept.c",
+  "../sysdeps/x86_64/fpu/fegetmode.c",
+  "../sysdeps/x86_64/fpu/fegetround.c",
+  "../sysdeps/x86_64/fpu/feholdexcpt.c",
+  "../sysdeps/x86_64/fpu/fesetenv.c",
+  "../sysdeps/x86_64/fpu/fesetexcept.c",
+  "../sysdeps/x86_64/fpu/fesetmode.c",
+  "../sysdeps/x86_64/fpu/fesetround.c",
+  "../sysdeps/x86_64/fpu/feupdateenv.c",
+  "../sysdeps/x86_64/fpu/fgetexcptflg.c",
+  "../sysdeps/x86_64/fpu/fraiseexcpt.c",
+  "../sysdeps/x86_64/fpu/fsetexcptflg.c",
+  "../sysdeps/x86_64/fpu/ftestexcept.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_asin.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_atan2.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_exp.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_exp2f.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_expf.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_log.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_log2.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_log2f.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_logf.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_pow.c",
+  "../sysdeps/x86_64/fpu/multiarch/e_powf.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_atan.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_ceil.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_ceilf.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_cosf.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_expm1.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_floor.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_floorf.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_fma.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_fma.c:__fma_ifunc",
+  "../sysdeps/x86_64/fpu/multiarch/s_fmaf.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_fmaf.c:__fmaf_ifunc",
+  "../sysdeps/x86_64/fpu/multiarch/s_log1p.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_nearbyint.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_nearbyintf.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_rint.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_rintf.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_roundeven.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_roundevenf.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_sin.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_sincos.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_sincosf.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_sinf.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_tan.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_trunc.c",
+  "../sysdeps/x86_64/fpu/multiarch/s_truncf.c",
+  "../sysdeps/x86_64/fpu/multiarch/svml_d_acos2_core.c",
+  "../sysdeps/x86_64/fpu/multiarch/w_exp.c",
+  "../sysdeps/x86_64/fpu/multiarch/w_log.c",
+  "../sysdeps/x86_64/fpu/multiarch/w_pow.c",
+  "../sysdeps/x86_64/fpu/s_atanl.c",
+  "../sysdeps/x86_64/fpu/s_logbl.c",
+  "../sysdeps/x86_64/fpu/s_nextafterl.c",
+  "../sysdeps/x86_64/fpu/s_nexttoward.c",
+  "../sysdeps/x86_64/fpu/s_nexttowardf.c",
+  "../sysdeps/x86_64/fpu/s_rintl.c",
+  "../sysdeps/x86_64/fpu/s_significandl.c",
   "../sysdeps/x86_64/multiarch/memcmp.c:memcmp_ifunc",
   "../sysdeps/x86_64/multiarch/memcpy.c",
   "../sysdeps/x86_64/multiarch/memmove.c",
@@ -1610,6 +2548,7 @@ static const char * glibc_X_names[] =
   "../sysdeps/x86_64/multiarch/strlen.c:strlen_ifunc",
   "../sysdeps/x86_64/multiarch/strncmp.c",
   "../sysdeps/x86_64/start.S",
+  "../sysdeps/x86_64/tlsdesc.c",
   "./sysdeps/unix/sysv/linux/aarch64/sysconf.c",
   "C-address.c",
   "C-collate.c",
@@ -1694,23 +2633,27 @@ compare (const void * v1, const void * v2)
   return strcmp (s1, s2);
 }
   
-/* Returns true iff COMPONENT_NAME is in FUNC_NAMES[NUM_NAMES].  */
-/* FIXME: Switch to using a hash lookup mechanism ?  */
+/* Returns true iff NAME is in NAMES[NUM_NAMES].
+   NAMES[] must be alpha sorted.
+   FIXME: Switch to using a hash lookup mechanism ?  */
 
 static bool
-skip_this_func (const char ** func_names, unsigned int num_names, const char * component_name)
+contains (const char ** names, unsigned int num_names, const char * name)
 {
-  return bsearch (component_name, func_names, num_names, sizeof (* func_names), compare) != NULL;
+  return bsearch (name, names, num_names, sizeof (* names), compare) != NULL;
 }
 
 static char buffer[1280]; /* FIXME: Use a dynamic buffer ? */
 
 static bool
 skip_checks_for_glibc_function (annocheck_data *  data,
-				enum test_index   test,
+				enum test_index   t,
 				const char *      component_name,
 				const char *      reason)
 {
+  if (! allow_exceptions)
+    return false;
+
   char c = component_name[0];
 
   /* Save time by checking for any function that starts with __.  */
@@ -1727,6 +2670,7 @@ skip_checks_for_glibc_function (annocheck_data *  data,
     }
   else
     {
+      // FIXME - the glbc_X_names array is quite big now.  Maybe break it up ?
       array = glibc_X_names;
       num   = ARRAY_SIZE (glibc_X_names);
     }
@@ -1734,13 +2678,13 @@ skip_checks_for_glibc_function (annocheck_data *  data,
   if (num == 0)
     return false;
 
-  if (skip_this_func (array, num, component_name))
+  if (contains (array, num, component_name))
     {
       /* FIXME: We need a way to determine that these files/functions are
 	 actually from the from the glibc sources and do not just happen
 	 to have a name in common.  */
       sprintf (buffer, reason, component_name);
-      skip (data, test, SOURCE_SKIP_CHECKS, buffer);
+      skip (data, t, SOURCE_SKIP_CHECKS, buffer);
       return true;
     }
 
@@ -1750,17 +2694,20 @@ skip_checks_for_glibc_function (annocheck_data *  data,
 static bool
 skip_cf_protection_checks_for (annocheck_data * data, enum test_index check, const char * component_name)
 {
+  if (! allow_exceptions)
+    return false;
+
   /* Save time by checking for any function that starts with __.  */
   if (component_name[0] == '_' && component_name[1] == '_')
     return true;
 
-  const static char * non_cf_components[] =
+  static const char * non_cf_components[] =
     {
       /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
       "errlist-data-gen.c"
     };
 
-  if (skip_this_func (non_cf_components, ARRAY_SIZE (non_cf_components), component_name))
+  if (contains (non_cf_components, ARRAY_SIZE (non_cf_components), component_name))
     {
       sprintf (buffer, "\
 function %s is part of the C library, and does not contain any code",
@@ -1775,7 +2722,10 @@ function %s is part of the C library, and does not contain any code",
 static bool
 skip_pic_checks_for_function (annocheck_data * data, enum test_index check, const char * component_name)
 {
-  const static char * non_pic_funcs[] =
+  if (! allow_exceptions)
+    return false;
+
+  static const char * non_pic_funcs[] =
     {
       /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
       "_GLOBAL__sub_I_main",
@@ -1791,7 +2741,7 @@ skip_pic_checks_for_function (annocheck_data * data, enum test_index check, cons
       "free_mem"
     };
 
-  if (skip_this_func (non_pic_funcs, ARRAY_SIZE (non_pic_funcs), component_name))
+  if (contains (non_pic_funcs, ARRAY_SIZE (non_pic_funcs), component_name))
     {
       sprintf (buffer, "\
 function %s is used to start/end program execution and as such does not need to be compiled with PIE support",
@@ -1806,6 +2756,9 @@ function %s is used to start/end program execution and as such does not need to 
 static bool
 skip_stack_checks_for_function (annocheck_data * data, enum test_index check, const char * component_name)
 {
+  if (! allow_exceptions)
+    return false;
+
   /* Do not check Rust binaries.  They do not use stack checking.  */
   if (RUST_compiler_seen ())
     return true;
@@ -1814,14 +2767,14 @@ skip_stack_checks_for_function (annocheck_data * data, enum test_index check, co
 function %s is part of the C library's static code, which executes without stack protection"))
     return true;
 
-  const static char * CGO_runtime_functions[] =
+  static const char * CGO_runtime_functions[] =
     { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
       "fatalf",
       "threadentry",
       "x_cgo_bindm"
     };
 
-  if (skip_this_func (CGO_runtime_functions, ARRAY_SIZE (CGO_runtime_functions), component_name))
+  if (contains (CGO_runtime_functions, ARRAY_SIZE (CGO_runtime_functions), component_name))
     {
       sprintf (buffer, "\
 function %s is part of the CGO runtime library which is compiled without stack protection",
@@ -1831,14 +2784,14 @@ function %s is part of the CGO runtime library which is compiled without stack p
     }
 
   /* The functions used to check for stack checking do not pass these tests either.  */
-  const static char * stack_check_funcs[] =
+  static const char * stack_check_funcs[] =
     { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
       "__stack_chk_fail_local",
       "stack_chk_fail.c",
       "stack_chk_fail_local.c"
     };
 
-  if (skip_this_func (stack_check_funcs, ARRAY_SIZE (stack_check_funcs), component_name))
+  if (contains (stack_check_funcs, ARRAY_SIZE (stack_check_funcs), component_name))
     {
       sprintf (buffer, "\
 function %s is part of the stack checking code and as such does not need stack protection itself",
@@ -1848,15 +2801,31 @@ function %s is part of the stack checking code and as such does not need stack p
     }
 
   /* Functions generated by the linker do not use stack protection.  */
-  const static char * linker_funcs[] =
+  static const char * linker_funcs[] =
     { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
       "__tls_get_offset"
     };
 
-  if (skip_this_func (linker_funcs, ARRAY_SIZE (linker_funcs), component_name))
+  if (contains (linker_funcs, ARRAY_SIZE (linker_funcs), component_name))
     {
       sprintf (buffer, "\
 function %s is generated by the linker and as such does not use stack protection",
+	       component_name);
+      skip (data, check, SOURCE_SKIP_CHECKS, buffer);
+      return true;
+    }
+
+  return false;
+}
+
+static bool
+skip_optimize_check_for_function (annocheck_data * data, enum test_index check, const char * component_name)
+{
+  /* This is a rather dubious heuristic for detecting glibc benchmark binaries.  */
+  if (startswith (data->filename, "bench-"))
+    {
+      sprintf (buffer, "\
+function %s is part of the C library's benchmarking suite which is deliberately built without optimization",
 	       component_name);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
       return true;
@@ -1873,7 +2842,12 @@ skip_lto_checks_for_function (annocheck_data * data, enum test_index check, cons
     return true;
 
   /* Any component starting with __libc_ is part of glibc.  */
-  if (strncmp (component_name, "__libc_", 7) == 0)
+  if (strncmp (component_name, "__libc_", 7) == 0
+      /* Not sure how this string is getting into the build data, but look for: */
+      || startswith (component_name, "/builddir/build/BUILD/glibc-")
+      /* This is a rather dubious heuristic for detecting glibc benchmark binaries.  */
+      || startswith (data->filename, "bench-")
+      )
     {
       sprintf (buffer, "\
 function %s is part of the C library which is deliberately built without LTO",
@@ -1882,19 +2856,8 @@ function %s is part of the C library which is deliberately built without LTO",
       return true;
     }
 
-  /* Not sure how this string is getting into the build data, but look for: */
-  if (startswith (component_name, "/builddir/build/BUILD/glibc-"))
-    {
-      sprintf (buffer, "\
-function %s is part of the C library which is deliberately built without LTO",
-	       component_name);
-      skip (data, check, SOURCE_SKIP_CHECKS, buffer);
-      return true;
-    }
-     
   return skip_checks_for_glibc_function (data, check, component_name, "\
 function %s is part of the C library which is deliberately built without LTO");
-
 }
 
 typedef struct func_skip
@@ -1907,23 +2870,23 @@ typedef struct func_skip
 static func_skip * skip_list = NULL;
 
 static void
-add_skip_for_func (enum test_index test, const char * funcname)
+add_skip_for_func (enum test_index t, const char * funcname)
 {
   func_skip * new_skip = xmalloc (sizeof * new_skip);
 
   new_skip->funcname = strdup (funcname);
-  new_skip->test = test;
+  new_skip->test = t;
   new_skip->next = skip_list;
   skip_list = new_skip;
 }
 
 static bool
-skip_test_for_func (enum test_index test, const char * funcname)
+skip_test_for_func (enum test_index t, const char * funcname)
 {
   func_skip * skip;
 
   for (skip = skip_list; skip != NULL; skip = skip->next)
-    if (streq (skip->funcname, funcname))
+    if (skip->test == t && streq (skip->funcname, funcname))
       return true;
   return false;
 }
@@ -1934,7 +2897,10 @@ skip_test_for_func (enum test_index test, const char * funcname)
 static bool
 is_special_clang_binary (annocheck_data * data)
 {
-  const char * file = get_filename (data);
+  if (! allow_exceptions)
+    return false;
+
+  const char * file = data->filename;
 
   if (startswith (file, "libclang_rt."))
     return true;
@@ -1945,6 +2911,44 @@ is_special_clang_binary (annocheck_data * data)
   return false;
 }
 
+static bool
+is_special_gcc_binary (annocheck_data * data)
+{
+  if (! allow_exceptions)
+    return false;
+
+  static const char * gcc_programs[] =
+    {
+      /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
+      "collect2",
+      "gcc",
+      "gcc-ar",
+      "gcc-nm",
+      "gcc-ranlib",
+      "gcn-run",
+      "gcov",
+      "gcov-dump",
+      "gcov-tool",
+      "liblto_plugin.so",
+      "lto-dump",
+      "lto-wrapper",
+      "lto1",
+      "mkoffload",
+      "nvptx-none-as",
+      "nvptx-none-ld",
+      "nvptx-none-nm",
+      "nvptx-none-run"
+    };
+
+  if (contains (gcc_programs, ARRAY_SIZE (gcc_programs), data->filename))
+      return true;
+
+  /* We also want to match <arch>-redhat-linux-gcc-<major>, eg: x86_64-redhat-linux-gcc-14 */
+  return strstr (data->filename ,"redhat-linux-gcc") != NULL
+    || strstr (data->filename ,"redhat-linux-accel") != NULL;
+}
+
+
 /* Many glibc binaries are hand built without many of the normal security features.
    This is known and expected however, so detect them here.  */
 
@@ -1954,25 +2958,31 @@ is_special_glibc_binary (annocheck_data * data)
   int i;
   const char * path = get_full_filename (data);
 
+  if (! allow_exceptions)
+    return false;
+
   /* The contents of static glibc libraries should be ignored.  */
   if (strchr (path, ':'))
     {
       static const char * known_glibc_static_libraries [] =
 	{
-	  "libnldbl_nonshared.a",
-	  "libBrokenLocale.a",
+	  "libBrokenLocale.a:",
 	  "libc.a:",
 	  "libc_nonshared.a:",
-	  "libstdc++_nonshared.a:",
 	  "libm-2.34.a:",
+	  "libm-2.39.a:",
 	  "libmvec.a:",
 	  "libmvec_nonshared.a:",
+	  "libnldbl_nonshared.a:",
 	  "libresolv.a:"
+	  "libstdc++_nonshared.a:"
 	};
 
       for (i = ARRAY_SIZE (known_glibc_static_libraries); i--;)
 	if (strstr (path, known_glibc_static_libraries[i]) != NULL)
 	  return true;
+
+      // FIXME: Can we terminate the search here ?
     }
 
   /* If we are testing an uninstalled rpm then the paths will probably
@@ -1981,6 +2991,31 @@ is_special_glibc_binary (annocheck_data * data)
     ++path;
   if (path[0] == '/')
     ++path;
+
+  /* As of RHEL-10 glibc releases include a special set of sysrooted rpms
+     for cross building.  */
+  if (strstr (path, "sys-root"))
+    {
+      static const char * known_sysroots [] =
+	{
+	  /* NB the / at the end is important.  */
+	  "usr/aarch64-redhat-linux/sys-root/el10/",
+	  "usr/ppc64le-redhat-linux/sys-root/el10/",
+	  "usr/s390x-redhat-linux/sys-root/el10/",
+	  "usr/x86_64-redhat-linux/sys-root/el10/"
+	};
+
+      for (i = ARRAY_SIZE (known_sysroots); i--;)
+	if (strncmp (path, known_sysroots[i], strlen (known_sysroots[i])) == 0)
+	  {
+	    path += strlen (known_sysroots[i]);
+	    break;
+	  }
+
+      if (i < 0)
+	return false;	  
+    }
+
   /* Look for absolute paths to known glibc install locations.
      If found, strip the prefix.
      This allows us to cope with symbolic links and 32-bit/64-bit multilibs.  */
@@ -2332,8 +3367,10 @@ is_special_glibc_binary (annocheck_data * data)
       "libnsl-2.33.so",
       "libnsl.so.1",
       "libnss_compat.so.2",
+      "libnss_db.so.2",
       "libnss_dns.so.2",
       "libnss_files.so.2",
+      "libnss_hesiod.so.2",
       "libpcprofile.so",
       "libpthread-2.28.so",
       "libpthread.so.0",
@@ -2355,19 +3392,7 @@ is_special_glibc_binary (annocheck_data * data)
       "zic"
     };
 
-  for (i = ARRAY_SIZE (known_glibc_specials); i--;)
-    {
-      int res = strcmp (path, known_glibc_specials[i]);
-
-      if (res == 0)
-	return true;
-
-      /* Since the array is alpha-sorted and we are searching in reverse order,
-	 a positive result means that path > special and hence we can stop the search.  */
-      if (res > 0)
-	return false;
-    }
-  return false;
+  return contains (known_glibc_specials, ARRAY_SIZE (known_glibc_specials), path);
 }
 
 /* Decides if a given test should be skipped for a the current component.
@@ -2376,6 +3401,9 @@ is_special_glibc_binary (annocheck_data * data)
 static bool
 skip_test_for_current_func (annocheck_data * data, enum test_index check)
 {
+  if (! allow_exceptions)
+    return false;
+
   /* BZ 1923439: IFuncs are compiled without some of the security
      features because they execute in a special environment.  */
   if (ELF64_ST_TYPE (per_file.component_type) == STT_GNU_IFUNC)
@@ -2461,6 +3489,9 @@ function %s is part of the C library's static code and does use math functions")
     case TEST_LTO:
       return skip_lto_checks_for_function (data, check, component_name);
 
+    case TEST_OPTIMIZATION:
+      return skip_optimize_check_for_function (data, check, component_name);
+
     default:
       return false;
     }
@@ -2482,7 +3513,7 @@ fail (annocheck_data * data,
 
   per_file.num_fails ++;
 
-  test * test = tests + testnum;
+  test * t = tests + testnum;
 
 #ifdef LIBANNOCHECK
   libannocheck_record_test_fail (testnum, source, reason);
@@ -2492,15 +3523,17 @@ fail (annocheck_data * data,
   if (fixed_format_messages)
     {
       const char * fname = sanitize_filename (filename);
-      einfo (INFO, FIXED_FORMAT_STRING, "FAIL", test->name, fname);
+      einfo (INFO, FIXED_FORMAT_STRING, "FAIL", t->name, fname);
       if (fname != filename)
 	free ((void *) fname);
     }
-  else if (test->state != STATE_FAILED || BE_VERBOSE)
+  else if (t->state != STATE_FAILED || BE_VERBOSE)
     {
       einfo (PARTIAL, "%s: %s: ", HARDENED_CHECKER_NAME, filename);
       go_red ();
-      einfo (PARTIAL, "FAIL: %s test ", test->name);
+      if (t->future)
+	einfo (PARTIAL, "FUTURE ");
+      einfo (PARTIAL, "FAIL: %s test ", t->name);
       if (reason)
 	einfo (PARTIAL, "because %s ", reason);
 
@@ -2525,7 +3558,7 @@ fail (annocheck_data * data,
     }
 #endif /* not LIBANNOCHECK */
 
-  test->state = STATE_FAILED;
+  t->state = STATE_FAILED;
 }
 
 static void
@@ -2556,7 +3589,7 @@ maybe (annocheck_data * data,
 
   per_file.num_maybes ++;
 
-  test * test = tests + testnum;
+  test * t = tests + testnum;
 
 #ifdef LIBANNOCHECK
   libannocheck_record_test_maybe (testnum, source, reason);
@@ -2567,19 +3600,19 @@ maybe (annocheck_data * data,
     {
       const char * fname = sanitize_filename (filename);
 
-      einfo (INFO, FIXED_FORMAT_STRING, "MAYB", test->name, fname);
+      einfo (INFO, FIXED_FORMAT_STRING, "MAYB", t->name, fname);
       if (fname != filename)
 	free ((void *) fname);
     }
-  else if (test->state == STATE_UNTESTED
-	   || test->state == STATE_SKIPPED
+  else if (t->state == STATE_UNTESTED
+	   || t->state == STATE_SKIPPED
 	   || BE_VERBOSE)
     {
       einfo (PARTIAL, "%s: %s: ", HARDENED_CHECKER_NAME, filename);
 
       go_gold ();
 
-      einfo (PARTIAL, "MAYB: test: %s", test->name);
+      einfo (PARTIAL, "MAYB: test: %s", t->name);
 
       if (reason)
 	einfo (PARTIAL, ", reason: %s", reason);
@@ -2605,8 +3638,8 @@ maybe (annocheck_data * data,
     }
 #endif /* not LIBANNOCHECK */
 
-  if (test->state != STATE_FAILED)
-    test->state = STATE_MAYBE;
+  if (t->state != STATE_FAILED)
+    t->state = STATE_MAYBE;
 
   return true;
 }
@@ -2620,9 +3653,9 @@ vvinfo (annocheck_data * data, enum test_index testnum, const char * source, con
   if (fixed_format_messages)
     return;
 
-  test * test = tests + testnum;
+  test * t = tests + testnum;
 
-  einfo (VERBOSE2, "%s: info: %s: %s (source %s)", get_filename (data), test->name, extra, source);
+  einfo (VERBOSE2, "%s: info: %s: %s (source %s)", get_filename (data), t->name, extra, source);
 }
 
 static const char *
@@ -2747,7 +3780,9 @@ add_producer (annocheck_data *  data,
 	    }
 	}
       else
-	pass (data, TEST_GO_REVISION, source, "GO compiler revision is sufficient");
+	{
+	  pass (data, TEST_GO_REVISION, source, "GO compiler revision is sufficient");
+	}
     }
 
   if (update_current_tool)
@@ -2768,7 +3803,7 @@ add_producer (annocheck_data *  data,
 
       per_file.seen_tool_versions[tool] = seen_with_code ? version : - version;
 
-      if (! fixed_format_messages)
+      if (! fixed_format_messages && per_file.profile != PROFILE_NONE)
 	einfo (VERBOSE, "%s: info: seen tool %s version %u", get_filename (data), get_tool_name (tool), version);
 
       if (tool == TOOL_GCC) /* FIXME: Update this if glibc ever starts using Clang.  */
@@ -2784,14 +3819,14 @@ add_producer (annocheck_data *  data,
     {
       if (per_file.seen_tool_versions[tool] < 0)
 	{
-	  if (! fixed_format_messages && (per_file.seen_tool_versions[tool] != - version))
+	  if (! fixed_format_messages && (per_file.seen_tool_versions[tool] != - (int) version))
 	    einfo (VERBOSE2, "resetting seen version from %d to %d", per_file.seen_tool_versions[tool], version);
 	  else
 	    einfo (VERBOSE2, "setting seen version to seen-with-code");
 
 	  per_file.seen_tool_versions[tool] = version;
 	}
-      else if (per_file.seen_tool_versions[tool] < version)
+      else if (per_file.seen_tool_versions[tool] < (int) version)
 	{
 	  if (! fixed_format_messages && (abs (per_file.seen_tool_versions[tool]) != version))
 	    einfo (VERBOSE2, "resetting seen version from %d to %d", per_file.seen_tool_versions[tool], version);
@@ -2800,7 +3835,7 @@ add_producer (annocheck_data *  data,
 
 	  per_file.seen_tool_versions[tool] = version;
 	}
-      else if (per_file.seen_tool_versions[tool] > version)
+      else if (per_file.seen_tool_versions[tool] > (int) version)
 	{
 	  if (! fixed_format_messages)
 	    einfo (VERBOSE2, "%s: info: ignore decrease in producer '%s' from version %u to version %u",
@@ -2966,6 +4001,13 @@ is_grub_module (annocheck_data * data)
     && per_file.has_modname;
 }
 
+static bool
+is_comboot_module (annocheck_data * data)
+{
+  return elf_kind (data->elf) == ELF_K_ELF
+    && per_file.e_type == ET_DYN
+    && endswith (data->filename, ".c32");
+}
 
 typedef struct tool_id
 {
@@ -3012,6 +4054,111 @@ is_rhel_10 (void)
     ;
 }
 
+/* The gcc support files (static libraries and object files) are built without
+   annotation or debug info, so they will fail many of the tests dues to lack
+   of information.  This function is to enabled special exceptions for these
+   files.  */
+
+static bool
+is_gcc_component (annocheck_data * data)
+{
+  const char * f = data->filename;
+  static const char * libraries[] =
+    {
+      "libasan.a:",
+      "libatomic.a:",
+      "libcaf_single.a:",
+      "libg.a:",
+      "libgcc.a:",
+      "libgcc_eh.a:",
+      "libgcov.a:",
+      "libgfortran.a:",
+      "libgomp.a:",
+      "libgcc_s-", /* Actual triggering filename was libgcc_s-15-20250425.so.1  */
+      "libhwasan.a:",
+      "libitm.a:",
+      "liblsan.a:",
+      "libm.a:",
+      "libquadmath.a:",
+      "libssp.a:",
+      "libssp_nonshared.a:",
+      "libstdc++.a:",
+      "libstdc++exp.a:",
+      "libstdc++fs.a:",
+      "libstdc++.so.6",
+      "libsupc++.a:",
+      "libtsan.a:",
+      "libubsan.a:",
+
+      NULL
+    };
+    
+  unsigned int i;
+  for (i = 0; libraries[i] != NULL; i++)
+    if (startswith (f, libraries[i]))
+      return true;
+
+  static const char * objects[] =
+    {
+      /* NB/ KEEP THIS ARRAY ALPHA SORTED.  */
+      "crt0.o",
+      "crtbegin.o",
+      "crtbeginS.o",
+      "crtbeginT.o",
+      "crtend.o",
+      "crtendS.o",
+      "crtfastmath.o",
+      "crtoffloadbegin.o",
+      "crtoffloadend.o",
+      "crtoffloadtable.o",
+      "crtoffloadtableS.o",
+      "crtprec32.o",
+      "crtprec64.o",
+      "crtprec80.o",
+      "libasan_preinit.o",
+      "libgfortran.so.5.0.0",
+      "libgomp.so.1",
+      "libgomp.so.1.0.0",
+      "libhwasan.so.0.0.0",
+      "libhwasan_preinit.o",
+      "liblsan_preinit.o",
+      "libtsan.so.2.0.0",
+      "libtsan_preinit.o"
+    };
+
+  return contains (objects, ARRAY_SIZE (objects), f);
+}
+
+static bool
+is_gcc_assembler_source (annocheck_data * data)
+{
+  const char * f = get_full_filename (data);
+
+  static const char * gcc_specials[] =
+    {
+      "libasan.a:asan_interceptors_vfork.o",
+      "libatomic.a:atomic_16.o",
+      "libhwasan.a:hwasan_interceptors_vfork.o",
+      "libhwasan.a:hwasan_setjmp_aarch64.o",
+      "libhwasan.a:hwasan_setjmp_x86_64.o",
+      "libhwasan.a:hwasan_tag_mismatch_aarch64.o",
+      "libitm.a:sjlj.o",
+      "libtsan.a:tsan_rtl_aarch64.o",
+      "libtsan.a:tsan_rtl_amd64.o",
+      "libtsan.a:tsan_rtl_ppc64.o",
+      "libtsan.a:tsan_rtl_s390x.o",
+
+      NULL
+    };
+  
+  unsigned int i;
+  for (i = 0; gcc_specials[i] != NULL; i++)
+    if (strstr (f, gcc_specials[i]) != NULL)
+      return true;
+
+  return false;
+}
+
 static void
 parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 {
@@ -3019,15 +4166,40 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 
   if (string == NULL)
     {
+      einfo (VERBOSE2, "Unable to read DW_AT_producer attribute, error message is: %s", dwarf_errmsg (-1));
+
       uint form = dwarf_whatform (attr);
 
       if (form == DW_FORM_GNU_strp_alt)
 	{
-	  if (! per_file.warned_strp_alt)
+	  /* RHEL-73349:
+	    The libdw library used to be unable to parse DW_FORM_GNU_strp_alt
+	     but that is no longer true.  More likely is that the debug info
+	     contains a link to a second debug file and this link could not
+	     be resolved.  */
+	  if (! per_file.warned_dw_at_producer)
 	    {
-	      einfo (VERBOSE, "%s: warn: DW_FORM_GNU_strp_alt found in DW_AT_producer, but this form is not yet handled by libelf",
-		     get_filename (data));
-	      per_file.warned_strp_alt = true;
+	      if (BE_VERBOSE)
+		{
+		  warn (data, "the DW_FORM_GNU_strp_alt form of the DW_AT_producer attribute could not be resolved");
+		  info (data, "this can happen if an old version of the elfutils-libs rpm is installed");
+		}
+
+	      /* Unfortunately if the first debuginfo file has a link to a
+		 second debuginfo file and this second link could not be
+		 resolved libdw will not tell us about the problem.  So we
+		 have to take a guess and warn the user without really
+		 knowing if this is the problem.  */
+	      if (BE_VERBOSE
+		  && annocheck_has_separate_debuginfo_link (data->dwarf_info.dwarf))
+		{
+		  /* See RHEL-73349 for an example of this.  */
+		  info (data, "or because the second debug info file (needed by the first) cannot be found");
+		  if (! annocheck_debuginfod_enabled ())
+		    info (data, "maybe try enabling debuginfod ?");
+		}
+		     
+	      per_file.warned_dw_at_producer = true;
 	    }
 	}
       else
@@ -3069,13 +4241,15 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 
   if (madeby == TOOL_UNKNOWN)
     {
-      /* FIXME: This can happen for object files because the DWARF data
-	 has not been relocated.  Find out how to handle this using libdwarf.  */
       if (is_object_file ())
+	/* FIXME: This can happen for object files because the DWARF data
+	   has not been relocated.  Find out how to handle this using libdwarf.  */
 	inform (data, "warn: DW_AT_producer string invalid - probably due to relocations not being applied");
       else
+	/* This happens with Clang produced debug info.  */
 	inform (data, "warn: Unable to determine the binary's creator from DW_AT_producer DWARF attribute");
       einfo (VERBOSE, "%s: debugging: DW_AT_producer = %s", get_filename (data), string);
+      per_file.seen_bad_dw_at_producer = true;
       return;
     }
 
@@ -3091,8 +4265,17 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
      necessarily apply to the entire binary, but in the absence of
      annobin data they are better than nothing.  */
 
-  if (strstr (string, "NOT_FOR_PRODUCTION") || strstr (string, "cross from"))
-    fail (data, TEST_PRODUCTION, SOURCE_COMMENT_SECTION, "not built by a supported compiler");
+  if (strstr (string, "NOT_FOR_PRODUCTION"))
+    fail (data, TEST_PRODUCTION, SOURCE_DW_AT_PRODUCER, "not built by a supported production compiler");
+  else if (strstr (string, "cross from"))
+    {
+      if (is_gcc_component (data))
+	skip (data, TEST_PRODUCTION, SOURCE_DW_AT_PRODUCER,
+	      "built by a cross compiler, but this is OK for gcc components");
+      else
+	maybe (data, TEST_PRODUCTION, SOURCE_DW_AT_PRODUCER,
+	       "built by a cross compiler - this may not be supported");
+    }
 
   bool options_found = false;
 
@@ -3140,6 +4323,14 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
       else
 	vvinfo (data, TEST_STACK_PROT, SOURCE_DW_AT_PRODUCER, "not found in DW_AT_producer string");
 
+
+      if (skip_test (TEST_STACK_CLASH))
+	;
+      else if (strstr (string, "-fstack-clash-protection"))
+	pass (data, TEST_STACK_CLASH, SOURCE_DW_AT_PRODUCER, "option found in DW_AT_producer string");
+      else
+	vvinfo (data, TEST_STACK_CLASH, SOURCE_DW_AT_PRODUCER, "not found in DW_AT_producer string");
+      
       if (is_x86_64 ())
 	{
 	  if (skip_test (TEST_CF_PROTECTION))
@@ -3242,7 +4433,7 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 }
 
 static void
-parse_dw_at_name (annocheck_data * data, Dwarf_Attribute * attr)
+parse_dw_at_name (Dwarf_Attribute *  attr)
 {
   const char * string = dwarf_formstring (attr);
 
@@ -3280,7 +4471,7 @@ dwarf_attribute_checker (annocheck_data *  data,
     {
       if (producer_changed_not_seen)
 	{
-	  parse_dw_at_name (data, & attr);
+	  parse_dw_at_name (& attr);
 	  producer_changed_not_seen = false;
 	}
     }
@@ -3290,11 +4481,11 @@ dwarf_attribute_checker (annocheck_data *  data,
 }
 
 #define MAX_DISABLED  12
-#define MAX_NAMES     6
+#define MAX_NAMES     7
 
 static const struct profiles
 {
-  const char *      name[MAX_NAMES]; /* Note: name[0] is used as the name of the profile in output statements.  */
+  const char *      names[MAX_NAMES]; /* Note: names[0] is used as the name of the profile in output statements.  */
   const char *      file_infix[MAX_NAMES];
   enum  test_index  disabled_tests[MAX_DISABLED];
   enum  test_index  enabled_tests[MAX_DISABLED];
@@ -3325,16 +4516,16 @@ static const struct profiles
 		      { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS },
 		      { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS, TEST_OPENSSL_ENGINE } },
 
-  [ PROFILE_RAWHIDE ] = { { "rawhide", "f40", "f39", "f38", "f37", "fedora" },
-			  { ".fc41", ".fc40", ".fc39", ".fc38", ".fc37" },
+  [ PROFILE_RAWHIDE ] = { { "rawhide", "f43", "f42" },
+			  { ".fc43", ".fc42" },
 			  { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS, TEST_FIPS, TEST_OPENSSL_ENGINE },
 			  { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS } },
 
-  [ PROFILE_F36 ] = { { "f36" },
-		      { ".fc36" },    
-		      { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS, TEST_FIPS, TEST_OPENSSL_ENGINE },
-		      { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS } },
-  
+  [ PROFILE_FEDORA ] = { { "fedora", "f41", "f40", "f39", "f38", "f37", "f36" },
+			 { ".fc41", ".fc40", ".fc39", ".fc38", ".fc37", ".fc36" },
+			  { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS, TEST_FIPS, TEST_OPENSSL_ENGINE },
+			  { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS } },
+
   [ PROFILE_F35 ] = { { "f35" }, /* Like RHEL - does not use AArch64 dynamic tags.  */
 		      { ".fc35" },    
 		      { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS, TEST_FIPS, TEST_OPENSSL_ENGINE },
@@ -3347,9 +4538,9 @@ static const struct profiles
 };
 
 static bool
-is_RHEL_profile (int profile)
+is_RHEL_profile (void)
 {
-  switch (profile)
+  switch (per_file.profile)
     {
     case PROFILE_EL7:
     case PROFILE_EL8:
@@ -3363,14 +4554,13 @@ is_RHEL_profile (int profile)
 }
 
 static void
-make_profile_based_changes (enum profile profile)
+make_profile_based_changes (void)
 {
   uint j;
+  enum profile profile = per_file.profile;
 
-  if (profile == PROFILE_AUTO || profiles[profile].name[0] == NULL)
+  if (profile == PROFILE_AUTO || profiles[profile].names[0] == NULL)
     return;
-
-  assert (per_file.profile == profile);
 
   for (j = 0; j < MAX_DISABLED; j++)
     {
@@ -3380,7 +4570,10 @@ make_profile_based_changes (enum profile profile)
 	break;
 
       if (! tests[index].set_by_user)
-	tests[index].enabled = false;
+	{
+	  einfo (VERBOSE2, "disabling test %s because of profile %s", tests[index].name, profiles[profile].names[0]);
+	  tests[index].enabled = false;
+	}
     }
 
   for (j = 0; j < MAX_DISABLED; j++)
@@ -3391,12 +4584,15 @@ make_profile_based_changes (enum profile profile)
 	break;
 
       if (! tests[index].set_by_user)
-	tests[index].enabled = true;
+	{
+	  einfo (VERBOSE2, "enabling test %s because of profile %s", tests[index].name, profiles[profile].names[0]);
+	  tests[index].enabled = true;
+	}
     }
 
   if (! dt_rpath_is_ok.option_set)
     {
-      if (profile == PROFILE_RAWHIDE || profile == PROFILE_F36)
+      if (profile == PROFILE_RAWHIDE || profile == PROFILE_FEDORA)
 	{
 	  dt_rpath_is_ok.option_value = false;
 	}
@@ -3415,7 +4611,7 @@ make_profile_based_changes (enum profile profile)
     }
   
   if (! fail_for_all_unicode.option_set)
-    fail_for_all_unicode.option_value = is_RHEL_profile (per_file.profile);
+    fail_for_all_unicode.option_value = is_RHEL_profile ();
 }
 
 static enum profile
@@ -3436,7 +4632,7 @@ get_profile_based_upon_filename (annocheck_data * data)
     {
       int j;
 
-      if (profiles[i].name[0] == NULL)
+      if (profiles[i].names[0] == NULL)
 	continue;
 
       for (j = 0; j < MAX_NAMES; j++)
@@ -3449,7 +4645,7 @@ get_profile_based_upon_filename (annocheck_data * data)
 	  if (strstr (filename, suffix) != NULL)
 	    {
 	      einfo (VERBOSE, "%s: info: selecting profile '%s' based upon filename (%s)",
-		     get_filename (data), profiles[i].name[0], filename);
+		     get_filename (data), profiles[i].names[0], filename);
 	      return i;
 	    }
 	}
@@ -3518,7 +4714,7 @@ start (annocheck_data * data)
   else
     per_file.profile = selected_profile;
 
-   make_profile_based_changes (per_file.profile);
+   make_profile_based_changes ();
   
   if (data->is_32bit)
     {
@@ -3659,6 +4855,9 @@ interesting_sec (annocheck_data *     data,
   if (streq (sec->secname, ".comment"))
     return true;
 
+  if (streq (sec->secname, ".go.buildinfo"))
+    return true;
+
   if (streq (sec->secname, ".gnu.attributes"))
     return true;
 
@@ -3679,13 +4878,13 @@ interesting_sec (annocheck_data *     data,
 }
 
 static bool
-interesting_note_sec (annocheck_data *     data,
+interesting_note_sec (annocheck_data *     data ATTRIBUTE_UNUSED,
 		      annocheck_section *  sec)
 {
   if (disabled)
     return false;
 
-  return sec->shdr.sh_type == SHT_NOTE || sec->shdr.sh_type == SHT_STRTAB;
+  return sec->shdr.sh_type == SHT_NOTE || sec->shdr.sh_type == SHT_STRTAB || sec->shdr.sh_type == SHT_PROGBITS;
 }
 
 static inline unsigned long
@@ -3700,7 +4899,7 @@ get_component_name (annocheck_data *     data,
 		    note_range *         note_data,
 		    bool                 prefer_func_symbol)
 {
-  char *         buffer;
+  char *         buf;
   const char *   sym;
   int            res;
   uint           type;
@@ -3710,20 +4909,20 @@ get_component_name (annocheck_data *     data,
   if (sym == NULL || * sym == 0)
     {
       if (note_data->start == note_data->end)
-	res = asprintf (& buffer, "address: %#lx", note_data->start);
+	res = asprintf (& buf, "address: %#lx", note_data->start);
       else
-	res = asprintf (& buffer, "addr range: %#lx..%#lx", note_data->start, note_data->end);
+	res = asprintf (& buf, "addr range: %#lx..%#lx", note_data->start, note_data->end);
 
       type = 0;
     }
   else
-    res = asprintf (& buffer, "component: %s", sym);
+    res = asprintf (& buf, "component: %s", sym);
 
   free ((char *) per_file.component_name);
 
   if (res > 0)
     {
-      per_file.component_name = buffer;
+      per_file.component_name = buf;
       per_file.component_type = type;
     }
   else
@@ -3985,17 +5184,17 @@ record_annobin_version (annocheck_data *  data,
 
 static void
 maybe_fail (annocheck_data *  data,
-	    enum test_index   test,
+	    enum test_index   t,
 	    const char *      source,
 	    const char *      test_text)
 {
   if (per_file.component_type != 0)
     {
-      fail (data, test, source, test_text);
+      fail (data, t, source, test_text);
     }
   else if (per_file.component_name == NULL)
     {
-      if (! maybe (data, test, source, test_text))
+      if (! maybe (data, t, source, test_text))
 	return;
 
       if (fixed_format_messages)
@@ -4007,7 +5206,7 @@ maybe_fail (annocheck_data *  data,
     }
   else
     {
-      if (! maybe (data, test, source, test_text))
+      if (! maybe (data, t, source, test_text))
 	return;
 
       if (fixed_format_messages)
@@ -4046,7 +5245,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 {
   if (! skip_test (TEST_OPTIMIZATION))
     {
-      if (value == -1)
+      if (value == (unsigned long) -1)
 	{
 	  maybe (data, TEST_OPTIMIZATION, source, "unexpected note value");
 	  einfo (VERBOSE, "debug: optimization note value: %lx", value);
@@ -4063,7 +5262,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 	    tests[TEST_OPTIMIZATION].state = STATE_PASSED;
 	}
       else if (((value >> 9) & 3) < 2)
-	fail (data, TEST_OPTIMIZATION, source, "level too low");
+	fail (data, TEST_OPTIMIZATION, source, "level too low (based upon annobin data)");
       else
 	pass (data, TEST_OPTIMIZATION, source, NULL);
     }
@@ -4388,7 +5587,7 @@ parse_tool_note (annocheck_data *  data,
 static void
 parse_version_note (annocheck_data *  data,
 		    const char *      attr,
-		    const char *      source,
+		    const char *      source ATTRIBUTE_UNUSED,
 		    bool              seen_with_code)
 {
   /* Check the Watermark protocol revision.  */
@@ -4742,7 +5941,7 @@ build_note_checker (annocheck_data *     data,
   switch (* attr)
     {
     case GNU_BUILD_ATTRIBUTE_VERSION:
-      if (value != -1)
+      if (value != (uint) -1)
 	{
 	  einfo (VERBOSE, "ICE:  The version note should have a string attribute");
 	  break;
@@ -4753,7 +5952,7 @@ build_note_checker (annocheck_data *     data,
       break;
 
     case GNU_BUILD_ATTRIBUTE_TOOL:
-      if (value != -1)
+      if (value != (uint) -1)
 	{
 	  einfo (VERBOSE, "ICE:  The tool note should have a string attribute");
 	  break;
@@ -5203,17 +6402,6 @@ build_note_checker (annocheck_data *     data,
 }
 
 static const char *
-handle_ppc64_property_note (annocheck_data *      data,
-			    annocheck_section *   sec,
-			    ulong                 type,
-			    ulong                 size,
-			    const unsigned char * notedata)
-{
-  einfo (VERBOSE2, "PPC64 property note handler not yet written...\n");
-  return NULL;
-}
-
-static const char *
 handle_aarch64_property_note (annocheck_data *      data,
 			      annocheck_section *   sec,
 			      ulong                 type,
@@ -5226,7 +6414,10 @@ handle_aarch64_property_note (annocheck_data *      data,
 #define GNU_PROPERTY_AARCH64_FEATURE_1_BTI	(1U << 0)
 #define GNU_PROPERTY_AARCH64_FEATURE_1_PAC	(1U << 1)
 #endif
-
+#ifndef GNU_PROPERTY_AARCH64_FEATURE_1_GCS
+#define GNU_PROPERTY_AARCH64_FEATURE_1_GCS	(1U << 2)
+#endif
+  
   if (type != GNU_PROPERTY_AARCH64_FEATURE_1_AND)
     {
       einfo (VERBOSE2, "%s: debug: property note type %lx", get_filename (data), type);
@@ -5251,15 +6442,24 @@ handle_aarch64_property_note (annocheck_data *      data,
   if ((property & GNU_PROPERTY_AARCH64_FEATURE_1_PAC) == 0)
     future_fail (data, TEST_BRANCH_PROTECTION, SOURCE_PROPERTY_NOTES, "The AArch64 PAC property is not enabled");
 
+  if ((property & GNU_PROPERTY_AARCH64_FEATURE_1_GCS) == 0)
+    {
+      if (test_enabled (TEST_BRANCH_PROTECTION))
+	{
+	  if (enable_future_tests)
+	    return "the GCS property is not enabled";
+	}
+    }
+
   return NULL;
 }
 
 static const char *
-handle_x86_property_note (annocheck_data *      data,
-			  annocheck_section *   sec,
-			  ulong                 type,
-			  ulong                 size,
-			  const unsigned char * notedata)
+handle_x86_64_property_note (annocheck_data *      data,
+			     annocheck_section *   sec,
+			     ulong                 type,
+			     ulong                 size,
+			     const unsigned char * notedata)
 {
   /* These are not defined in the RHEL-7 build environment.  */
 #ifndef GNU_PROPERTY_X86_FEATURE_1_AND
@@ -5313,16 +6513,18 @@ property_note_checker (annocheck_data *     data,
 		       GElf_Nhdr *          note,
 		       size_t               name_offset,
 		       size_t               data_offset,
-		       void *               ptr)
+		       void *               ptr ATTRIBUTE_UNUSED)
 {
   const char * reason = NULL;
+
+  per_file.property_note_section_seen = true;
 
   if (skip_test (TEST_PROPERTY_NOTE))
     return true;
 
   if (note->n_type != NT_GNU_PROPERTY_TYPE_0)
     {
-      einfo (VERBOSE2, "%s: info: unexpected GNU Property note type %x", get_filename (data), note->n_type);
+      einfo (VERBOSE2, "%s: info: unexpected GNU Property note type %x - ignoring", get_filename (data), note->n_type);
       return true;
     }
 
@@ -5363,26 +6565,31 @@ property_note_checker (annocheck_data *     data,
       goto fail;
     }
 
-  const char * (* handler) (annocheck_data *, annocheck_section *, ulong, ulong, const unsigned char *);
+  const char * (* handler) (annocheck_data *, annocheck_section *, ulong, ulong, const unsigned char *) = NULL;
+
   switch (per_file.e_machine)
     {
     case EM_X86_64:
-    case EM_386:
-      handler = handle_x86_property_note;
+      handler = handle_x86_64_property_note;
       break;
 
     case EM_AARCH64:
       handler = handle_aarch64_property_note;
       break;
 
-    case EM_PPC64:
-      handler = handle_ppc64_property_note;
-      break;
-
     default:
-      einfo (VERBOSE2, "%s: WARN: Property notes for architecture %d not handled", get_filename (data), per_file.e_machine);
-      return true;
+      einfo (VERBOSE2, "%s: WARN: Property notes for architecture %d not handled (yet)",
+	     get_filename (data), per_file.e_machine);
+      return NULL;
+
+    case EM_386:
+      /* -fcf-protection has been dropped for x86 as it is not supported by the kernel.
+	 Hence there is no need to check the property notes.  */
+    case EM_PPC64:
+      return NULL;
     }
+
+  assert (handler != NULL);
 
   while (remaining)
     {
@@ -5408,23 +6615,25 @@ property_note_checker (annocheck_data *     data,
 
   /* Do not complain about a missing CET note yet - there may be a .note.go.buildid
      to follow, which would explain why the CET note is missing.  */
-  per_file.has_property_note = true;
+  per_file.property_note_is_good = true;
+  per_file.property_note_is_good_set = true;
   return true;
 
  fail:
   fail (data, TEST_PROPERTY_NOTE, SOURCE_PROPERTY_NOTES, reason);
+  per_file.property_note_is_good = false;
+  per_file.property_note_is_good_set = true;
   return false;
 }
+
+/* Strictly speaking this test is "has property notes which are of
+   interest to the hardening checker".  */
 
 static bool
 supports_property_notes (int e_machine)
 {
   return e_machine == EM_X86_64
-    || e_machine == EM_AARCH64
-#if 0
-    || e_machine == EM_PPC64
-#endif
-    || e_machine == EM_386;
+    || e_machine == EM_AARCH64;
 }
 
 static void
@@ -5633,8 +6842,8 @@ check_annobin_fortify_level (annocheck_data *    data,
 }
 
 static void
-check_annobin_frame_pointer (annocheck_data *    data,
-			     const char *        ptr)
+check_annobin_frame_pointer (annocheck_data *    data ATTRIBUTE_UNUSED,
+			     const char *        ptr ATTRIBUTE_UNUSED)
 {
   /* FIXME: The frame pointer note is not currently used/tested.  */
   return;
@@ -5777,8 +6986,8 @@ check_annobin_pic_setting (annocheck_data *    data,
 }
 
 static void
-check_annobin_plugin_name (annocheck_data *    data,
-			   const char *        ptr)
+check_annobin_plugin_name (annocheck_data *    data ATTRIBUTE_UNUSED,
+			   const char *        ptr ATTRIBUTE_UNUSED)
 { 
   /* FIXME: The plugin name is not currently used.  */
   return;
@@ -5920,8 +7129,8 @@ check_annobin_stack_protector (annocheck_data *    data,
 }
 
 static void
-check_annobin_aarch64_abi (annocheck_data *    data,
-			   const char *        ptr)
+check_annobin_aarch64_abi (annocheck_data *    data ATTRIBUTE_UNUSED,
+			   const char *        ptr ATTRIBUTE_UNUSED)
 {
   /* FIXME: The ABI notes are not checked at the moment.  */
   return;
@@ -5982,16 +7191,16 @@ check_annobin_i686_stack_realign (annocheck_data *    data,
 }
 
 static void
-check_annobin_ppc64_abi (annocheck_data *    data,
-			 const char *        ptr)
+check_annobin_ppc64_abi (annocheck_data *    data ATTRIBUTE_UNUSED,
+			 const char *        ptr ATTRIBUTE_UNUSED)
 {
   /* FIXME: The ABI notes are not checked at the moment.  */
   return;
 }
 
 static void
-check_annobin_x86_64_abi (annocheck_data *    data,
-			  const char *        ptr)
+check_annobin_x86_64_abi (annocheck_data *    data ATTRIBUTE_UNUSED,
+			  const char *        ptr ATTRIBUTE_UNUSED)
 {
   /* FIXME: The ABI notes are not checked at the moment.  */
   return;
@@ -6195,7 +7404,9 @@ check_dynamic_section (annocheck_data *    data,
   bool aarch64_bti_plt_seen = false;
   bool aarch64_pac_plt_seen = false;
   bool has_dt_hash = false;
+#if 0
   bool has_dt_gnu_hash = false;
+#endif
   
   if (sec->shdr.sh_size == 0 || sec->shdr.sh_entsize == 0)
     {
@@ -6345,11 +7556,11 @@ check_dynamic_section (annocheck_data *    data,
 	case DT_HASH:
 	  has_dt_hash = true;
 	  break;
-		
+#if 0
 	case DT_GNU_HASH:
 	  has_dt_gnu_hash = true;
 	  break;
-		
+#endif
 	default:
 	  break;
 	}
@@ -6372,6 +7583,8 @@ check_dynamic_section (annocheck_data *    data,
 	skip (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "binary was built by GO");
       else if (is_special_glibc_binary (data))
 	skip (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "glibc binaries do not use bind-now");
+      else if (is_special_gcc_binary (data))
+	skip (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "gcc binaries do not use bind-now");
       else
 	fail (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "not linked with -Wl,-z,now");
     }
@@ -6397,7 +7610,10 @@ check_dynamic_section (annocheck_data *    data,
 	  switch (res)
 	  {
 	  case 0:
-	    fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is missing from the dynamic tags");
+	    if (is_gcc_component (data))
+	      skip (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "some AArch64 GCC binaries are built without branch protection");
+	    else
+	      fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is missing from the dynamic tags");
 	    pass (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT and PAC_PLT flags not in the dynamic tags");
 	    break;
 
@@ -6411,7 +7627,10 @@ check_dynamic_section (annocheck_data *    data,
 	    break;
 
 	  case 2:
-	    fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is missing from the dynamic tags");
+	    if (is_gcc_component (data))
+	      skip (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "some AArch64 GCC binaries are built without branch protection");
+	    else
+	      fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is missing from the dynamic tags");
 	    fail (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the PAC_PLT flag is present in the dynamic tags");
 	    break;
 
@@ -6430,7 +7649,8 @@ static bool
 scan_rodata_section (annocheck_data *    data,
 		     annocheck_section * sec)
 {
-  if (per_file.current_tool == TOOL_GO)
+  if (per_file.current_tool == TOOL_GO
+      && untested (TEST_GO_REVISION))
     {
       /* Look for a GO compiler build version.  See check_note_section()
 	 for why we cannot use the .note.go.buildid section.
@@ -6439,6 +7659,9 @@ scan_rodata_section (annocheck_data *    data,
 	 BZ: 2094420: With the 1.18 release of GO it appears that the
 	 <R> field has been dropped from this string, so also support
 	 "go<N>.<V>".
+
+	 FIXME: This check is unreliable.  See RHEL-56031 for an example
+	 of where it fails.
 
 	 FIXME: For now we expect the <N> field to be 1.  This helps
 	 to make the scan a little bit faster.  */
@@ -6451,23 +7674,30 @@ scan_rodata_section (annocheck_data *    data,
 
 	  go_version += strlen (go_lead_in);
 
-	  if (sscanf (go_version, "%u.%u", & version, & revision) > 0
-	      && version != -1)
+	  if (sscanf (go_version, "%u.%u", & version, & revision) == 2
+	      && version != (uint) -1)
 	    {
-	      add_producer (data, TOOL_GO, version, SOURCE_RODATA_SECTION,
-			    false, /* We have no guaratee that there is actual GO compiled code in the binary.  */
-			    false /* Do not update the current_tool field.  */);
-	      set_lang (data, LANG_GO, SOURCE_RODATA_SECTION);
+	      uint other_version = (uint) -1;
 
-	      /* Paranoia - check to see if there is a second, similar string.  */
+	      /* RHEL-56031: check to see if there is a second, similar string.  */
 	      go_version = memmem (go_version, sec->data->d_size - (go_version - (const char *) sec->data->d_buf),
 				   go_lead_in, strlen (go_lead_in));
-	      uint other_version = -1;
+
 	      if (go_version != NULL
-		  && sscanf (go_version, "%u.%u", & other_version, & revision) > 0
-		  && other_version != -1
+		  && sscanf (go_version + strlen (go_lead_in), "%u.%u", & other_version, & revision) == 2
+		  && other_version != (uint) -1
 		  && other_version != version)
-		maybe (data, TEST_GO_REVISION, SOURCE_RODATA_SECTION, "multiple, different GO version strings found");
+		{
+		  inform (data,
+			  "multiple, different GO version strings found in .rodata section - ignoring");
+		}
+	      else
+		{
+		  add_producer (data, TOOL_GO, version, SOURCE_RODATA_SECTION,
+				false, /* We have no guaratee that there is actual GO compiled code in the binary.  */
+				false /* Do not update the current_tool field.  */);
+		  set_lang (data, LANG_GO, SOURCE_RODATA_SECTION);
+		}
 	    }
 	  else
 	    einfo (VERBOSE2, "%s string found in .rodata, but could not parse version info", go_lead_in);
@@ -6496,7 +7726,7 @@ scan_rodata_section (annocheck_data *    data,
 	  rust_version += strlen (rust_lead_in);
 
 	  if (sscanf (rust_version, "%u.%u", & version, & revision) > 0
-	      && version != -1)
+	      && version != (uint) -1)
 	    {
 	      add_producer (data, TOOL_RUST, version, SOURCE_RODATA_SECTION,
 			    false, /* We have no guaratee that there is actual GO compiled code in the binary.  */
@@ -6512,20 +7742,8 @@ scan_rodata_section (annocheck_data *    data,
 }
 
 static bool
-check_progbits_section (annocheck_data *     data,
-			annocheck_section *  sec)
+check_comment_section (annocheck_data * data, annocheck_section * sec)
 {
-  if (sec->data->d_size >= 7 && streq (sec->secname, ".rodata"))
-    return scan_rodata_section (data, sec);
-
-  if (sec->data->d_size >= strlen (ANNOBIN_STRING_SECTION_NAME)
-      && streq (sec->secname, ANNOBIN_STRING_SECTION_NAME))
-    return check_annobin_string_section (data, sec);
-
-  /* At the moment we are only interested in the .comment section.  */
-  if (sec->data->d_size <= 11 || ! streq (sec->secname, ".comment"))
-    return true;
-
   const char * tool = (const char *) sec->data->d_buf;
   const char * tool_end = tool + sec->data->d_size;
 
@@ -6569,11 +7787,83 @@ check_progbits_section (annocheck_data *     data,
 	}
 
       /* Check for files built by tools that are not intended to produce production ready binaries.  */
-      if (strstr (tool, "NOT_FOR_PRODUCTION") || strstr (tool, "cross from"))
-	fail (data, TEST_PRODUCTION, SOURCE_COMMENT_SECTION, "not built by a supported compiler");
+      if (strstr (tool, "NOT_FOR_PRODUCTION"))
+	fail (data, TEST_PRODUCTION, SOURCE_COMMENT_SECTION, "not built by a supported production compiler");
+      else if (strstr (tool, "cross from"))
+	{
+	  if (is_gcc_component (data))
+	    skip (data, TEST_PRODUCTION, SOURCE_COMMENT_SECTION,
+		  "built by a cross compiler, but this is OK for gcc components");
+	  else
+	    maybe (data, TEST_PRODUCTION, SOURCE_COMMENT_SECTION,
+		   "built by a cross compiler - this may not be supported");
+	}
 
       tool += strlen (tool) + 1;
     }
+
+  return true;
+}
+
+static bool
+check_go_buildinfo_section (annocheck_data * data, annocheck_section * sec)
+{
+  if (! test_enabled (TEST_GO_REVISION))
+    return true;
+
+  if (sec->data->d_buf == NULL || sec->data->d_size == 0)
+    return false;
+
+  static const char * go_lead_in = "go1.";
+
+  const char * go_version = memmem (sec->data->d_buf, sec->data->d_size, go_lead_in, strlen (go_lead_in));
+  if (go_version != NULL)
+    {
+      uint version;
+      uint revision;
+
+      go_version += strlen (go_lead_in);
+	  
+      if (sscanf (go_version, "%u.%u", & version, & revision) == 2)
+	{
+	  add_producer (data, TOOL_GO, version, SOURCE_GO_BUILDINFO,
+			true, /* We assume that there was code associated with this buildinfo.  */
+			true /* Update the current_tool field.  */);
+	}
+    }
+
+  return true;
+}
+
+/* This is a utility macro to handle the situation where the code
+   wants to place a constant string into the code, followed by a
+   comma and then the length of the string.  Doing this by hand
+   is error prone, so using this macro is safer.  */
+#define STRING_COMMA_LEN(STR) (STR), (sizeof (STR) - 1)
+
+struct progbit_checkers
+{
+  const char *  secname;
+  uint          secname_len;
+  bool (*       checker)(annocheck_data *, annocheck_section *);
+} pbc [] =
+{
+  { STRING_COMMA_LEN (".rodata"), scan_rodata_section },
+  { STRING_COMMA_LEN (ANNOBIN_STRING_SECTION_NAME), check_annobin_string_section },
+  { STRING_COMMA_LEN (".comment"), check_comment_section },
+  { STRING_COMMA_LEN (".go.buildinfo"), check_go_buildinfo_section }
+};
+
+static bool
+check_progbits_section (annocheck_data *     data,
+			annocheck_section *  sec)
+{
+  uint i;
+
+  for (i = ARRAY_SIZE (pbc); i--;)
+    if (sec->data->d_size >= pbc[i].secname_len
+	&& strneq (sec->secname, pbc[i].secname, pbc[i].secname_len))
+      return pbc[i].checker (data, sec);
 
   return true;
 }
@@ -6894,6 +8184,53 @@ is_shared_lib (void)
   return true;
 }
 
+/* Returns the page size of the target architecture.  We cannot use
+   getconf(PAGESIZE) as we may not be running on a machine of the
+   same type as the binary that we are examining.  */
+static Elf64_Addr
+get_page_size (void)
+{
+  switch (per_file.e_machine)
+    {
+    case EM_AARCH64:
+      /* RHEL-60807: The AArch64 kernel is built with a page size of 64KiB.
+	 But RHEL 9+ and Fedora kernels also supports a page size of 4KiB.
+	 We return the smaller size since we are interested in detecting gaps
+	 between LOAD segments into which code might be inserted.  */
+      if (per_file.profile == PROFILE_EL7 || per_file.profile == PROFILE_EL8)
+	return 0x10000;
+      else
+	return 0x1000;
+    case EM_386:     return 0x1000;
+    case EM_ARM:     return 0x1000;
+    case EM_PPC64:   return 0x10000;
+    case EM_RISCV:   return 0x1000;
+    case EM_S390:    return 0x1000;
+    case EM_X86_64:  return 0x1000;
+    default:
+      return 0x1000;
+    }
+}
+
+static Elf64_Addr
+page_align_up (Elf64_Addr addr)
+{
+  Elf64_Addr page_mask = get_page_size () - 1;
+  return (addr + page_mask) & ~ page_mask;
+}
+
+static Elf64_Addr
+page_align_down (Elf64_Addr addr)
+{
+  Elf64_Addr page_mask = get_page_size () - 1;
+  return addr & ~ page_mask;
+}
+
+/* Note - a lot of segment specific tests only require the segment header
+   and not the segment contents.  Hence they can be performed here rather
+   than in check_seg(), which means that annocheck may never need to load
+   the contents of some segments at all.  */
+
 static bool
 interesting_seg (annocheck_data *    data,
 		 annocheck_segment * seg)
@@ -6904,18 +8241,10 @@ interesting_seg (annocheck_data *    data,
   if (seg->phdr->p_flags & PF_X)
     per_file.seen_executable_segment = true;
 
+  bool need_to_check = false;
+
   switch (seg->phdr->p_type)
     {
-    case PT_TLS:
-      if (! skip_test (TEST_RWX_SEG)
-	  && seg->phdr->p_memsz > 0
-	  && (seg->phdr->p_flags & PF_X))
-	{
-	  fail (data, TEST_RWX_SEG, SOURCE_SEGMENT_HEADERS, "TLS segment has eXecute flag set");
-	  einfo (VERBOSE2, "TLS segment number: %d", seg->number);
-	}
-      break;
-
     case PT_INTERP:
       per_file.has_program_interpreter = true;
       break;
@@ -6954,23 +8283,58 @@ interesting_seg (annocheck_data *    data,
       return supports_property_notes (per_file.e_machine);
 
     case PT_LOAD:
-      if (! skip_test (TEST_RWX_SEG))
+      if (! skip_test (TEST_LOAD_SEGMENTS))
 	{
-	  if (seg->phdr->p_memsz > 0
-	      && (seg->phdr->p_flags & (PF_X | PF_W | PF_R)) == (PF_X | PF_W | PF_R))
-	    {
-	      /* Object files should not have segments.  */
-	      assert (! is_object_file ());
-	      fail (data, TEST_RWX_SEG, SOURCE_SEGMENT_HEADERS, "segment has Read, Write and eXecute flags set");
-	      einfo (VERBOSE2, "RWX segment number: %d", seg->number);
-	    }
-	}
+	  Elf64_Addr  next_addr = page_align_up (per_file.prev_load_seg_addr + per_file.prev_load_seg_size);
 
-      if (! skip_test (TEST_RHIVOS)
-	  && seg->phdr->p_memsz > 0
-	  && (seg->phdr->p_flags & PF_X)
-	  && (seg->phdr->p_flags & PF_W))
-	fail (data, TEST_RHIVOS, SOURCE_SEGMENT_HEADERS, "LOAD segment with Write and Execute permissions seen");
+	  if (next_addr != 0)
+	    {
+	      if (seg->phdr->p_vaddr <= per_file.prev_load_seg_addr)
+		{
+		  fail (data, TEST_LOAD_SEGMENTS, SOURCE_SEGMENT_HEADERS, "the LOAD segments are not in ascending order of virtual address");
+		  einfo (VERBOSE, "debug: prev load seg (number %u) starts at %#lx",
+			 per_file.prev_load_seg_number, (long) per_file.prev_load_seg_addr);
+		  einfo (VERBOSE, "debug: this load seg (number %u) starts at %#lx", seg->number, (long) seg->phdr->p_vaddr);
+		}
+
+	      if (page_align_down (seg->phdr->p_vaddr) < next_addr)
+		{
+		  fail (data, TEST_LOAD_SEGMENTS, SOURCE_SEGMENT_HEADERS, "two LOAD segments overlap");
+		  einfo (VERBOSE, "debug: prev LOAD seg (%u) ends at   %#lx", per_file.prev_load_seg_number, (long) next_addr);
+		  einfo (VERBOSE, "debug: this LOAD seg (%u) starts at %#lx", seg->number, (long) page_align_down (seg->phdr->p_vaddr));
+		}
+
+	      /* Kernels can support more than one page size.  If the linker uses a large page size then
+		 it can leave smaller page sized gaps between loadable segments, and the kernel might use
+		 these.  This can confuse programs that are sensitive to code layout and could in theory
+		 break ASLR.  So look for these gaps here.  */
+	      if (page_align_down (seg->phdr->p_vaddr) > page_align_up (next_addr + 1))
+		{
+		  /* Temporary: set to future_fail() until the linker can be fixed. */
+		  if (enable_future_tests)
+		    {
+		      /* Hack so that the formatting of fail()'s output looks correct.  */
+		      tests[TEST_LOAD_SEGMENTS].future = true;
+		      fail (data, TEST_LOAD_SEGMENTS, SOURCE_SEGMENT_HEADERS, "there is a gap between LOAD segments of more than one page");
+		      tests[TEST_LOAD_SEGMENTS].future = false;
+
+		      einfo (VERBOSE, "debug: prev LOAD seg (%u) ends at   %#lx",
+			     per_file.prev_load_seg_number, (long) next_addr);
+		      einfo (VERBOSE, "debug: this LOAD seg (%u) starts at %#lx leaving a gap of %u %#lx sized page(s)",
+			     seg->number,
+			     (long) seg->phdr->p_vaddr,
+			     (uint) ((page_align_down (seg->phdr->p_vaddr) - page_align_up (next_addr + 1)) / get_page_size ()),
+			     (long) get_page_size ());
+		    }
+		}
+	    }
+
+	  /* Record the details of this segment so that it can be checked
+	     against the next loadable segment, if there is one.  */
+	  per_file.prev_load_seg_addr = seg->phdr->p_vaddr;
+	  per_file.prev_load_seg_size = seg->phdr->p_memsz;
+	  per_file.prev_load_seg_number = seg->number;
+	}
 
       /* If we are checking the entry point instruction then we need to load
 	 the segment.  We check segments rather than sections because executables
@@ -6984,15 +8348,58 @@ interesting_seg (annocheck_data *    data,
 	  && seg->phdr->p_memsz > 0
 	  && seg->phdr->p_vaddr <= per_file.e_entry
 	  && seg->phdr->p_vaddr + seg->phdr->p_memsz > per_file.e_entry)
-	return true;
+	/* We need to examine the contents of this segment, so return true here.
+	   This will cause the contents of the segment to be loaded and then
+	   check_seg() to be called.  */
+	need_to_check = true;
 
+      /* Fall through.  */
+    case PT_TLS:
+      /* TLS segments are loadable so we perform some of the LOAD_SEGMENTS tests on
+	 them as well.  But they are also allowed/expected to overlap with LOAD segments
+	 so we do not perform ordering tests checked above.  */
+      if (! skip_test (TEST_LOAD_SEGMENTS))
+	{
+	  if (is_object_file ())
+	    /* This should never happen.  */
+	    fail (data, TEST_LOAD_SEGMENTS, SOURCE_SEGMENT_HEADERS, "segments found in object file");
+
+	  if (seg->phdr->p_memsz == 0)
+	    {
+	      fail (data, TEST_LOAD_SEGMENTS, SOURCE_SEGMENT_HEADERS, "contains an empty LOAD segment");
+	      einfo (VERBOSE, "debug: LOAD seg number %u starts at %lx size %lx",
+		     seg->number, (long) seg->phdr->p_vaddr, (long) seg->phdr->p_memsz);
+	    }
+
+	  if ((seg->phdr->p_flags & (PF_X | PF_W)) == (PF_X | PF_W))
+	    {
+	      if (is_comboot_module (data))
+		skip (data, TEST_LOAD_SEGMENTS, SOURCE_SEGMENT_HEADERS, "LOAD segments with RWX are expected in COMBOOT modules");
+	      else
+		fail (data, TEST_LOAD_SEGMENTS, SOURCE_SEGMENT_HEADERS, "LOAD segment with Write and Execute permissions seen");
+	      einfo (VERBOSE2, "debug: load segment number %u flags %x", seg->number, seg->phdr->p_flags);
+	    }
+
+	  /* The loader *might* have problems with segments larger than 2Gb.  */
+	  Elf64_Xword bigseg = 2L;
+	  bigseg *= 1024L;
+	  bigseg *= 1024L;
+	  bigseg *= 1024L;
+	  
+	  if (! skip_test (TEST_RHIVOS) && seg->phdr->p_memsz > bigseg)
+	    {
+	      fail (data, TEST_RHIVOS, SOURCE_SEGMENT_HEADERS, "LOAD segment larger than 2GiB seen");
+	      einfo (VERBOSE, "debug: load segment number %u, segment size: %lx",
+		     seg->number, (long) seg->phdr->p_memsz);
+	    }
+	}
       break;
 
     default:
       break;
     }
 
-  return false;
+  return need_to_check;
 }
 
 static bool
@@ -7101,8 +8508,7 @@ check_seg (annocheck_data *    data,
 }
 
 static bool
-is_nop_byte (annocheck_data * data ATTRIBUTE_UNUSED,
-	     unsigned char    byte,
+is_nop_byte (unsigned char    byte,
 	     uint             index,
 	     ulong            addr_bias)
 {
@@ -7120,6 +8526,7 @@ is_nop_byte (annocheck_data * data ATTRIBUTE_UNUSED,
 	case 1: return byte == 0x20;
 	case 2: return byte == 0x03;
 	case 3: return byte == 0xd5;
+	default: return false;
 	}
 
     case EM_S390:
@@ -7422,7 +8829,7 @@ ignore_gap (annocheck_data * data, note_range * gap)
   unsigned char * sec_bytes = ((unsigned char *) sec_data->d_buf) + addr1_bias;
   uint i;
   for (i = gap->end - gap->start; i--;)
-    if (sec_bytes[i] != 0 && ! is_nop_byte (data, sec_bytes[i], i, addr1_bias))
+    if (sec_bytes[i] != 0 && ! is_nop_byte (sec_bytes[i], i, addr1_bias))
       {
 	einfo (VERBOSE2, "%s: gap is significant", get_filename (data));
 	return false;
@@ -7865,9 +9272,9 @@ check_for_gaps (annocheck_data * data)
 }
 
 static bool
-does_not_contain_code (annocheck_data * data)
+does_not_contain_code (void)
 {
-  if (is_object_file())
+  if (is_object_file ())
     {
       if (! per_file.seen_executable_section)
 	return true;
@@ -7897,10 +9304,14 @@ warn_about_unknown_source (annocheck_data * data, uint i)
 
   if (BE_VERBOSE)
     {
-      warn (data, "This can happen if the program is compiled from a language unknown to annocheck");
-      warn (data, " or because there are no annobin build notes (could they be in a separate file ?)");
+      info (data, "This can happen if the program is compiled from a language unknown to annocheck");
+      if (data->sep_debug_file_not_found)
+	info (data, " or because the information is in the missing debug info file");
+      info (data, " or because there is no debug information at all");
+      info (data, " or because the annobin notes were never created");
+
       if (PROVIDE_A_URL)
-	warn (data, "For more details see https://sourceware.org/annobin/annobin.html/Absence-of-compiled-code.html");
+	info (data, "For more details see https://sourceware.org/annobin/annobin.html/Absence-of-compiled-code.html");
     }
 }
 
@@ -7911,6 +9322,8 @@ warn_about_assembler_source (annocheck_data * data, uint i)
      is used, and in this case the user is telling us to ignore this kind of test.  */
   if (per_file.seen_tool_versions[TOOL_GAS] > 1)
     skip (data, i, SOURCE_FINAL_SCAN, "assembler sources are not checked by this test");
+  else if (C_compiler_seen () && ! C_compiler_used ())
+    skip (data, i, SOURCE_FINAL_SCAN, "C sources compiled without notes are not checked by this test");
   else
     skip (data, i, SOURCE_FINAL_SCAN, "sources compiled as if they were assembler are not checked by this test");
 
@@ -7927,20 +9340,47 @@ warn_about_assembler_source (annocheck_data * data, uint i)
 static void
 warn_about_missing_notes (annocheck_data * data, uint i)
 {
-  if (! maybe (data, i, SOURCE_FINAL_SCAN, "no notes found regarding this feature"))
+  if (! maybe (data, i, SOURCE_FINAL_SCAN, "annobin notes regarding this feature not found"))
     return;
 
   if (! per_file.build_notes_seen && ! per_file.build_string_notes_seen)
-    warn (data, " possibly due to missing annobin notes (are they in a separate file ?)");
+    warn (data, " no annnobin notes were found - could they be in a separate file ?");
   else if (per_file.gaps_seen)
-    warn (data, " or because of gaps in the notes ?");		  
+    warn (data, " possibly because of gaps found in the notes ?");		  
 }
+
+static struct result_counters
+{
+  uint fails;
+  uint maybes;
+  uint passes;
+  uint total;
+} results;
+
 
 static bool
 finish (annocheck_data * data)
 {
   if (disabled || per_file.debuginfo_file)
     return true;
+
+  struct checker hardened_notechecker =
+    {
+      HARDENED_CHECKER_NAME,
+      NULL,  /* altname */
+      NULL,  /* start_file */
+      interesting_note_sec,
+      check_sec,
+      NULL, /* interesting_seg */
+      NULL, /* check_seg */
+      NULL, /* end_file */
+      NULL, /* process_arg */
+      NULL, /* usage */
+      NULL, /* version */
+      NULL, /* start_scan */
+      NULL, /* end_scan */
+      NULL, /* internal */
+    };
 
   /* If there is a separate debuginfo file, check it for notes as well.
      NB/ This check must happen after the call to annocheck_walk_dwarf()
@@ -7949,28 +9389,45 @@ finish (annocheck_data * data)
   if (data->dwarf_info.filename != NULL
       && data->dwarf_info.fd != data->fd)
     {
-      struct checker hardened_notechecker =
-	{
-	 HARDENED_CHECKER_NAME,
-	 NULL,  /* altname */
-	 NULL,  /* start_file */
-	 interesting_note_sec,
-	 check_sec,
-	 NULL, /* interesting_seg */
-	 NULL, /* check_seg */
-	 NULL, /* end_file */
-	 NULL, /* process_arg */
-	 NULL, /* usage */
-	 NULL, /* version */
-	 NULL, /* start_scan */
-	 NULL, /* end_scan */
-	 NULL, /* internal */
-	};
-
       einfo (VERBOSE2, "%s: info: running subchecker on %s", get_filename (data), data->dwarf_info.filename);
-      annocheck_process_extra_file (& hardened_notechecker, data->dwarf_info.filename, get_filename (data), data->dwarf_info.fd);
+      annocheck_process_extra_file (& hardened_notechecker, data->dwarf_info.filename,
+				    get_filename (data), data->dwarf_info.fd);
     }
+  /* There could have been dwarf info in the main file and yet
+     it still has a separate debug info file as well.
+     Note annocheck_has_separate_debuginfo_link () is unreliable as older
+     versions of libelf will not always report an available link.  See
+     RHEL-79264 for an example.  So we always attempt to open a separate
+     file without checking to see if the library reports one as being
+     available.  */
+  else if (data->dwarf_info.dwarf != NULL)
+    {
+      int fd;
+      char * filename = NULL;
 
+      if (! annocheck_open_separate_debuginfo_file (data, & filename, & fd))
+	{
+	  if (filename == NULL)
+	    einfo (VERBOSE2, "%s: does not have a separate debug info file", get_filename (data));
+	  else
+	    einfo (VERBOSE2, "%s: unable to open separate debug info file '%s' for note parsing",
+		   get_filename (data), filename);
+	}
+      else
+	{
+	  einfo (VERBOSE2, "%s: info: running subchecker on %s", get_filename (data), filename);
+
+	  annocheck_process_extra_file (& hardened_notechecker, filename, get_filename (data), fd);
+
+	  (void) close (fd);
+	  free (filename);
+	}
+    }
+  else einfo (VERBOSE2, "%s: no need to run a subchecker", get_filename (data));
+
+  bool exception_for_gcc = is_gcc_component (data);
+  bool exception_for_glibc = is_special_glibc_binary (data);
+    
   if (! per_file.build_notes_seen
       && ! per_file.build_string_notes_seen
       && test_enabled (TEST_NOTES))
@@ -7988,18 +9445,26 @@ finish (annocheck_data * data)
 
 	  if (RUST_compiler_seen ())
 	    skip (data, TEST_NOTES, SOURCE_FINAL_SCAN, "RUST compiler does not generate annobin notes");
-	  else if (does_not_contain_code (data))
+	  if (LLVM_compiler_seen ())
+	    skip (data, TEST_NOTES, SOURCE_FINAL_SCAN, "LLVM compiler does not generate annobin notes");
+	  else if (does_not_contain_code ())
 	    skip (data, TEST_NOTES, SOURCE_FINAL_SCAN, "no code detected, therefore no need for annobin notes");
+	  else if (is_comboot_module (data))
+	    skip (data, TEST_NOTES, SOURCE_FINAL_SCAN, "COMBOOT modules do not record annobin notes");
 	  else if (! per_file.has_dwarf)
 	    {
+	      if (exception_for_gcc)
+		skip (data, TEST_NOTES, SOURCE_FINAL_SCAN, "gcc components are built without annotation");
 	      /* We need the DWARF info in order to determinte the compiler type.
 		 Also these days the notes are held in the separate debuginfo files.  */
-	      if (is_object_file ())
+	      else if (is_object_file ())
 		maybe (data, TEST_NOTES, SOURCE_FINAL_SCAN, "annobin notes not found");
 	      else
 		maybe (data, TEST_NOTES, SOURCE_FINAL_SCAN, "notes not found and no DWARF info found (could there be a separate debuginfo file ?)");
 	    }
-	  else if (C_compiler_used ())
+	  else if (exception_for_gcc)
+	    skip (data, TEST_NOTES, SOURCE_FINAL_SCAN, "gcc static libraries are built without annotation");
+	  else if (C_compiler_seen ())
 	    fail (data, TEST_NOTES, SOURCE_FINAL_SCAN, "annobin notes were not found");
 	  else if (assembler_seen ())
 	    warn_about_assembler_source (data, TEST_NOTES);
@@ -8016,7 +9481,7 @@ finish (annocheck_data * data)
 	skip (data, TEST_GAPS, SOURCE_FINAL_SCAN, "gaps are expected in object files");
       else if (per_file.e_machine == EM_ARM)
 	skip (data, TEST_GAPS, SOURCE_FINAL_SCAN, "gaps are expected in ARM binaries");
-      else if (does_not_contain_code (data))
+      else if (does_not_contain_code ())
 	skip (data, TEST_GAPS, SOURCE_FINAL_SCAN, "no code detected, therefore gaps are irrelevant");
       else if (per_file.build_string_notes_seen)
 	/* FIXME: This is wrong.  String notes only imply full coverage of a specific source file, not all source files.  */
@@ -8056,12 +9521,12 @@ finish (annocheck_data * data)
 	    case TEST_ENTRY:
 	    case TEST_FAST:
 	    case TEST_INSTRUMENTATION:
+	    case TEST_LOAD_SEGMENTS:
 	    case TEST_NOTES:
 	    case TEST_OPENSSL_ENGINE:
 	    case TEST_PRODUCTION:
 	    case TEST_RHIVOS:
 	    case TEST_RUN_PATH:
-	    case TEST_RWX_SEG:
 	    case TEST_SHORT_ENUMS:
 	    case TEST_TEXTREL:
 	    case TEST_THREADS:
@@ -8096,8 +9561,10 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "BPF binaries are special");
 	      else if (per_file.e_machine == EM_AMDGPU)
 		skip (data, i, SOURCE_FINAL_SCAN, "AMD GPU binaries are special");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
+	      else if (exception_for_gcc)/* eg: PPC64: libgcc.a:crtsavevr.o */
+		skip (data, i, SOURCE_FINAL_SCAN, "some gcc files are built without a gnu stack");
 	      else if (is_object_file ())
 		{
 		  fail (data, i, SOURCE_FINAL_SCAN, "no .note.GNU-stack section found");
@@ -8118,6 +9585,8 @@ finish (annocheck_data * data)
 		skip (data, TEST_PIE, SOURCE_FINAL_SCAN, "RUST binaries are safe without PIE");
 	      else if (ADA_compiler_seen ())
 		skip (data, TEST_PIE, SOURCE_FINAL_SCAN, "ADA does not support PIE");
+	      else if (is_special_gcc_binary (data))
+		skip (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "gcc binaries are built without PIE");
 	      else
 		fail (data, TEST_PIE, SOURCE_FINAL_SCAN, "not built with '-Wl,-pie'");
 	      break;
@@ -8141,6 +9610,8 @@ finish (annocheck_data * data)
 	      else if (GO_compiler_seen ())
 		/* FIXME: Should be changed once GO supports PIE & BIND_NOW.  */
 		skip (data, i, SOURCE_FINAL_SCAN, "built by GO");
+	      else if (is_comboot_module (data))
+		skip (data, i, SOURCE_FINAL_SCAN, "COMBOOT modules do not use relocs");
 	      else
 		fail (data, i, SOURCE_FINAL_SCAN, "not linked with -Wl,-z,relro");
 	      break;
@@ -8151,7 +9622,7 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "AArch64 specific");
 	      else if (is_object_file ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not effective in object files");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
 	      else if (i == TEST_DYNAMIC_TAGS && GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "GO compilation does not support branch protection");
@@ -8163,6 +9634,9 @@ finish (annocheck_data * data)
 		  else
 		    skip (data, i, SOURCE_FINAL_SCAN, "Rust compilation does not support branch protection");
 		}
+	      else if (i == TEST_DYNAMIC_TAGS && exception_for_gcc)
+		/* FIXME: Is this safe ?  */
+		skip (data, i, SOURCE_FINAL_SCAN, "Some gcc binaries do not support branch protection");
 	      else
 		{
 		  fail (data, TEST_DYNAMIC_TAGS, SOURCE_FINAL_SCAN, "no dynamic tags found");
@@ -8175,15 +9649,17 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "at least part of the binary is compield GO");
 	      else if (per_file.e_machine == EM_ARM)
 		skip (data, i, SOURCE_FINAL_SCAN, "ARM binaries are built without annobin annotation");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
-	      else if (is_special_glibc_binary (data))
+	      else if (exception_for_glibc)
 		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries not compiled with LTO");
+	      else if (exception_for_gcc)
+		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
 	      else if (C_compiler_used ())
 		maybe (data, i, SOURCE_FINAL_SCAN, "source code is C/C++ but if -flto was used, it was not recorded");
 	      else if (RUST_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "RUST sources are not compiled with LTO");
-	      else if (per_file.warned_strp_alt)
+	      else if (per_file.warned_dw_at_producer)
 		skip (data, i, SOURCE_FINAL_SCAN, "could not check for -flto in the DWARF DW_AT_producer string");
 	      else if (assembler_seen ())
 		warn_about_assembler_source (data, i);
@@ -8202,7 +9678,7 @@ finish (annocheck_data * data)
 	    case TEST_FORTIFY:
 	      if (per_file.lto_used)
 		skip (data, i, SOURCE_FINAL_SCAN, "compiling in LTO mode hides preprocessor and warning options");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
 	      else if (is_kernel_module (data))
 		skip (data, i, SOURCE_FINAL_SCAN, "kernel modules are not compiled with this feature");
@@ -8219,10 +9695,14 @@ finish (annocheck_data * data)
 		   because of the problems reported in https://bugzilla.redhat.com/show_bug.cgi?id=1951492
 		   So until that issue is resolved (if it ever is), we can expect missing notes for ARM32.  */
 		skip (data, i, SOURCE_FINAL_SCAN, "ARM32 code is usually compiled without annobin plugin support");
-	      else if (is_special_glibc_binary (data))
+	      else if (exception_for_glibc)
 		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries are not compiled with this feature");
-	      else if (per_file.warned_strp_alt)
+	      else if (per_file.warned_dw_at_producer)
 		skip (data, i, SOURCE_FINAL_SCAN, "could not check the DWARF DW_AT_producer string");
+	      else if (per_file.seen_bad_dw_at_producer && LLVM_compiler_seen ())
+		skip (data, i, SOURCE_FINAL_SCAN, "could not parse LLVM produced DWARF DW_AT_producer string");		
+	      else if (exception_for_gcc)
+		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
 	      else if (C_compiler_used ())
 		maybe_fail (data, i, SOURCE_FINAL_SCAN, "no indication that the necessary option was used (and a C compiler was detected)");
 	      else if (assembler_seen ())	
@@ -8234,17 +9714,21 @@ finish (annocheck_data * data)
 	    case TEST_PIC:
 	      if (GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "GO binaries are safe without PIC");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
 	      else if (per_file.e_machine == EM_ARM)
 		skip (data, i, SOURCE_FINAL_SCAN, "ARM binaries are built without annobin annotation");
+	      else if (exception_for_gcc)
+		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
+	      else if (is_comboot_module (data))
+		skip (data, i, SOURCE_FINAL_SCAN, "COMBOOT modules are not compiled as PIC code");
 	      else if (C_compiler_used ())
 		fail (data, i, SOURCE_FINAL_SCAN, "no indication that -fPIC was used");
 	      else if (! per_file.build_notes_seen && ! per_file.build_string_notes_seen)
 		maybe (data, i, SOURCE_FINAL_SCAN, "no valid notes found regarding this test");
 	      else if (RUST_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "RUST binaries are built without -fPIC");
-	      else if (per_file.warned_strp_alt)
+	      else if (per_file.warned_dw_at_producer)
 		skip (data, i, SOURCE_FINAL_SCAN, "could not check for -pic in DWARF DW_AT_producer string");
 	      else if (assembler_seen ())
 		warn_about_assembler_source (data, i);
@@ -8261,15 +9745,19 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "ARM binaries are built without annobin annotation");
 	      else if (per_file.lto_used)
 		skip (data, i, SOURCE_FINAL_SCAN, "compiling in LTO mode hides the -fstack-protector-strong option");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore no stack protection needed");
 	      else if (RUST_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "Rust binaries do not need stack protection");
-	      else if (is_special_glibc_binary (data))
+	      else if (exception_for_glibc)
 		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries do not need/use stack protection");
-	      else if (C_compiler_used ())
+	      else if (exception_for_gcc)
+		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
+	      else if (is_comboot_module (data))
+		skip (data, i, SOURCE_FINAL_SCAN, "COMBOOT modules do not use stack protection");
+	      else if (C_compiler_seen ())
 		warn_about_missing_notes (data, i);
-	      else if (per_file.warned_strp_alt)
+	      else if (per_file.warned_dw_at_producer)
 		skip (data, i, SOURCE_FINAL_SCAN, "could not check for options in the DWARF DW_AT_producer string");
 	      else if (assembler_seen ())
 		warn_about_assembler_source (data, i);
@@ -8280,10 +9768,12 @@ finish (annocheck_data * data)
 	    case TEST_IMPLICIT_VALUES:
 	      if (! C_compiler_used ())
 		skip (data, i, SOURCE_FINAL_SCAN, " These tests are only relevent to C source code");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
 	      else if (! GCC_compiler_used ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not compiled by GCC - therefore test not needed");
+	      else if (exception_for_gcc)
+		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
 	      else
 		warn_about_missing_notes (data, i);
 	      break;
@@ -8294,15 +9784,19 @@ finish (annocheck_data * data)
 	    case TEST_OPTIMIZATION:
 	      if (GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "GO does not need/use this feature");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
 	      else if (per_file.e_machine == EM_ARM)
 		skip (data, i, SOURCE_FINAL_SCAN, "ARM binaries are built without annobin annotation");
 	      else if (RUST_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "test not relevant to Rust binaries");
-	      else if (C_compiler_used ())
+	      else if (exception_for_gcc)
+		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
+	      else if (is_comboot_module (data))
+		skip (data, i, SOURCE_FINAL_SCAN, "COMBOOT modules do not have annobin data or debug information");
+	      else if (C_compiler_seen ())
 		warn_about_missing_notes (data, i);
-	      else if (per_file.warned_strp_alt)
+	      else if (per_file.warned_dw_at_producer)
 		skip (data, i, SOURCE_FINAL_SCAN, "could not check for options in the DWARF DW_AT_producer string");
 	      else if (assembler_seen ())
 		warn_about_assembler_source (data, i);
@@ -8315,7 +9809,7 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "not supported on ARM architectures");
 	      else if (per_file.e_machine == EM_RISCV)
 		skip (data, i, SOURCE_FINAL_SCAN, "not used on RISC-V architecture");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore no stack protection needed");
 	      else if (GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "GO is stack safe");
@@ -8329,28 +9823,35 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "AMD GPU binaries are special");
 	      else if (RUST_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "Rust binaries do not need stack clash protection");
-	      else if (is_special_glibc_binary (data))
-		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries do not need/use stack clash protection");
-	      else if (C_compiler_used ())
+	      else if (is_comboot_module (data))
+		skip (data, i, SOURCE_FINAL_SCAN, "COMBOOT modules do not use stack clash protection");	      
+	      else if (C_compiler_seen ())
 		{
-		  if (GCC_compiler_used ())
+		  if (exception_for_gcc)
+		    skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
+		  else if (GCC_compiler_seen ())
 		    warn_about_missing_notes (data, i);
 		  else
 		    skip (data, i, SOURCE_FINAL_SCAN, "Only GCC uses optional stack clash protection");
 		}
-	      else if (per_file.warned_strp_alt)
+	      else if (per_file.warned_dw_at_producer)
 		skip (data, i, SOURCE_FINAL_SCAN, "could not check for options in the DWARF DW_AT_producer string");
 	      else if (assembler_seen ())
 		warn_about_assembler_source (data, i);
+	      /* Some of GCC's static libraries contain assembler sourced object files that
+		 are built without annotation or debug info.  Catch these here.  */
+	      else if (is_gcc_assembler_source (data))
+		skip (data, i, SOURCE_FINAL_SCAN, "gcc support file assembled without notes or debuginfo");
 	      else
 		warn_about_unknown_source (data, i);
 	    break;
 
 	    case TEST_PROPERTY_NOTE:
 	      if (! supports_property_notes (per_file.e_machine))
-		skip (data, i, SOURCE_FINAL_SCAN, "property notes not used");
+		skip (data, i, SOURCE_FINAL_SCAN, "property notes do not contain hardening information");
 	      else if (is_object_file ())
-		skip (data, i, SOURCE_FINAL_SCAN, "property notes not needed in object files");
+		/* FIXME - we should check object files as well.  */
+		skip (data, i, SOURCE_FINAL_SCAN, "property notes in object files are not tested");
 	      else if (GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "property notes not needed for GO binaries");
 	      else if (RUST_compiler_seen ())
@@ -8365,28 +9866,40 @@ finish (annocheck_data * data)
 		{
 		  if (test_enabled (TEST_BRANCH_PROTECTION))
 		    {
-		      if (per_file.has_property_note)
-			pass (data, i, SOURCE_FINAL_SCAN, "properly formatted .note.gnu.property section found");
+		      if (exception_for_gcc)
+			skip (data, i, SOURCE_FINAL_SCAN, "some gcc binaries are built without branch protection support");
+		      else if (! per_file.property_note_section_seen)
+			fail (data, i, SOURCE_FINAL_SCAN, "no .note.gnu.property section found");
+		      else if (! per_file.property_note_is_good_set)
+			fail (data, i, SOURCE_FINAL_SCAN, "the .note.gnu.property section does not have the expected features set");
+		      else if (per_file.property_note_is_good)
+			pass (data, i, SOURCE_FINAL_SCAN, "necessary features found in the .note.gnu.property section");
 		      else
-			fail (data, i, SOURCE_FINAL_SCAN, "properly formatted .note.gnu.property not found (it is needed for branch protection support)");
+			fail (data, i, SOURCE_FINAL_SCAN, "branch protection features missing from .note.gnu.property section");
 		    }
 		  else
 		    pass (data, i, SOURCE_FINAL_SCAN, "the AArch64 property note is only useful if branch protection is being checked");
 		}
 	      else if (is_x86_64 ())
 		{
-		  if (per_file.has_cf_protection)
-		    pass (data, i, SOURCE_FINAL_SCAN, "CET enabled property note found");
-		  else if (per_file.has_property_note)
+		  if (! per_file.property_note_section_seen)
+		    fail (data, i, SOURCE_FINAL_SCAN, "no .note.gnu.property section found");
+		  else if (test_enabled (TEST_CF_PROTECTION))
 		    {
-		      if (test_enabled (TEST_CF_PROTECTION))
-			fail (data, i, SOURCE_FINAL_SCAN, "a property note was found but it shows that cf-protection is not enabled");
+		      if (per_file.has_cf_protection)
+			pass (data, i, SOURCE_FINAL_SCAN, "CET enabled property note found");
 		      else
-			pass (data, i, SOURCE_FINAL_SCAN, "a property note was found.  (Not CET enabled, but this is not being checked)");
+			fail (data, i, SOURCE_FINAL_SCAN, "the .note.gnu.property section does not show CET as being enabled");
 		    }
+		  else if (! per_file.property_note_is_good_set)
+		    fail (data, i, SOURCE_FINAL_SCAN, "the .note.gnu.property section does not have the expected features set");
+		  else if (per_file.property_note_is_good)
+		    pass (data, i, SOURCE_FINAL_SCAN, "a good .note.gnu.property section was found.");
 		}
-	      else if (per_file.has_property_note)
-		pass (data, i, SOURCE_FINAL_SCAN, "property note found");
+	      else if (per_file.property_note_section_seen)
+		skip (data, i, SOURCE_FINAL_SCAN, "the .note.gnu.property section does not contain any hardening information for this architecture");
+	      else if (is_i686 () && LLVM_compiler_seen ())
+		skip (data, i, SOURCE_FINAL_SCAN, "LLVM does not generate property notes for i686 binaries");
 	      else
 		fail (data, i, SOURCE_FINAL_SCAN, "no .note.gnu.property section found");
 	      break;
@@ -8394,7 +9907,7 @@ finish (annocheck_data * data)
 	    case TEST_CF_PROTECTION:
 	      if (! is_x86_64 ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not an x86_64 binary");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore cf protection not needed");
 	      else if (GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "control flow protection is not needed for GO binaries");
@@ -8426,12 +9939,16 @@ finish (annocheck_data * data)
 	    case TEST_STACK_REALIGN:
 	      if (! is_i686 ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not an i686 executable");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore stack realignment not needed");
 	      else if (! GCC_compiler_used ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no GCC compiled C/C++ code found");
 	      else if (per_file.lto_used)
 		skip (data, i, SOURCE_FINAL_SCAN, "compiling in LTO mode hides the -mstackrealign option");
+	      else if (exception_for_glibc)
+		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries do not need/use stack clash protection");
+	      else if (exception_for_gcc)
+		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
 	      else
 		maybe (data, i, SOURCE_FINAL_SCAN, "no indication that the -mstackrealign option was used");
 	      break;
@@ -8440,10 +9957,16 @@ finish (annocheck_data * data)
 	    case TEST_BRANCH_PROTECTION:
 	      if (per_file.e_machine != EM_AARCH64)
 		skip (data, i, SOURCE_FINAL_SCAN, "not an AArch64 binary");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore branch protection not needed");
 	      else if (GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "GO binaries do not support branch protection");
+	      else if (exception_for_glibc)
+		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries do not need/use stack clash protection");
+	      else if (! per_file.has_dwarf)
+		skip (data, i, SOURCE_FINAL_SCAN, "could not check for options in the DWARF DW_AT_producer string");
+	      else if (per_file.warned_dw_at_producer)
+		skip (data, i, SOURCE_FINAL_SCAN, "could not check for options in the DWARF DW_AT_producer string");
 	      else if (! GCC_compiler_used ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not built by GCC");
 	      else if (i == TEST_BRANCH_PROTECTION)
@@ -8454,6 +9977,8 @@ finish (annocheck_data * data)
 		    skip (data, i, SOURCE_FINAL_SCAN, "compiling in LTO mode hides the -mbranch-protection option");
 		  else if (per_file.branch_protection_pending_pass)
 		    pass (data, i, SOURCE_FINAL_SCAN, "-mbranch-protection has been used correctly");
+		  else if (exception_for_gcc)
+		    skip (data, i, SOURCE_FINAL_SCAN, "some gcc files are built without branch protection");
 		  else
 		    fail (data, i, SOURCE_FINAL_SCAN, "the -mbranch-protection option was not used");
 		}
@@ -8468,7 +9993,7 @@ finish (annocheck_data * data)
 	      break;
 
 	    case TEST_GO_REVISION:
-	      if (does_not_contain_code (data))
+	      if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore compiler revision not important");
 	      else if (GO_compiler_seen ())
 		fail (data, i, SOURCE_FINAL_SCAN, "no GO compiler revision information found");
@@ -8479,7 +10004,7 @@ finish (annocheck_data * data)
 	    case TEST_ONLY_GO:
 	      if (! is_x86 ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not compiled for x86");
-	      else if (does_not_contain_code (data))
+	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore moxed compilation not a problem");
 	      else if (! GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no indication that a GO compiler was used");
@@ -8498,6 +10023,14 @@ finish (annocheck_data * data)
       ranges = NULL;
       next_free_range = num_allocated_ranges = 0;
     }
+
+  results.total++;
+  if (per_file.num_fails)
+    results.fails++;
+  else if (per_file.num_maybes)
+    results.maybes++;
+  else
+    results.passes++;
   
  /* FIXME: Add an option to ignore MAYBE results ? */
   if (per_file.num_fails > 0 || per_file.num_maybes > 0)
@@ -8512,23 +10045,26 @@ finish (annocheck_data * data)
 
       if (is_rhel_10 () && is_i686 ())
 	{
-	  einfo (INFO, "%s: Overall: SKIP (because i686 is not supported on RHEL-10",
+	  einfo (PREFIXED, "%s: Overall: SKIP (because i686 is not supported on RHEL-10",
 		 get_filename (data));
 	  return true;
 	}
 
       if (per_file.num_fails > 0)
-	einfo (INFO, "%s: Overall: FAIL", get_filename (data));
+	einfo (PREFIXED, "%s: Overall: FAIL", get_filename (data));
       else
-	einfo (INFO, "%s: Overall: FAIL (due to MAYB results)", get_filename (data));
+	einfo (PREFIXED, "%s: Overall: FAIL (due to MAYB results)", get_filename (data));
 
       return false;
     }
 
-  if (BE_VERBOSE)
-    einfo (INFO, "%s: Overall: PASS", get_filename (data));
-  else
-    einfo (INFO, "%s: PASS", get_filename (data));
+  if (! skip_passes)
+    {
+      if (BE_VERBOSE)
+	einfo (PREFIXED, "%s: Overall: PASS", get_filename (data));
+      else 
+	einfo (PREFIXED, "%s: PASS", get_filename (data));
+    }
 
   return true;
 }
@@ -8537,11 +10073,11 @@ static void
 version (int level)
 {
   if (level == -1)
-    einfo (INFO, "Version 1.6");
+    einfo (INFO, "Version 1.7");
   else if (level == 0)
     {
       if (selected_profile >= PROFILE_NONE && selected_profile < PROFILE_MAX)
-	einfo (INFO, "using profile: %s", profiles [selected_profile].name[0]);
+	einfo (INFO, "using profile: %s", profiles [selected_profile].names[0]);
     }
 }
 
@@ -8570,10 +10106,12 @@ usage (void)
 
   einfo (INFO, "  Some tests report potential future problems that are not enforced at the moment");
   einfo (INFO, "    --skip-future             Disables these future fail tests (default)");
-  einfo (INFO, "    --test-future             Enable the future fail tests");
+  einfo (INFO, "    --test-future             Allow and enable all tests with the future fail feature");
+  einfo (INFO, "    --enable-future           Allow future fail tests but do not enable any of them specifically");
+  einfo (INFO, "    --disable-future          Disallow future fail tests");
 
   einfo (INFO, "  To enable/disable tests for a specific environment use:");
-  einfo (INFO, "    --profile=[none|el7|el8|el9|el10|rawhide|f38|f37|f36|f35|rhivos|auto]");
+  einfo (INFO, "    --profile=[none|el{7|8|9|10}|rawhide|f{43|42|41|40|39|38|37|36|35}|rhivos|auto]");
   einfo (INFO, "                              Ensure that only tests suitable for a specific OS are run");
   einfo (INFO, "                              Auto profile attempts to deduced the profile based upon the input rpm name");
 
@@ -8589,19 +10127,36 @@ usage (void)
   einfo (INFO, "  In order to have a consistent output enable this option:");
   einfo (INFO, "    --fixed-format-messages   Display messages in a fixed format");
 
-  einfo (INFO, "  By default when not operating in verbose more only the filename of input files will be displayed in messages");
+  einfo (INFO, "  By default when not operating in verbose mode only the filename of input files will be displayed in messages");
   einfo (INFO, "  This can be changed with:");
   einfo (INFO, "    --full-filenames          Display the full path of input files");
   einfo (INFO, "    --base-filenames          Display only the filename of input files");
 
   einfo (INFO, "  When the output is directed to a terminal colouring will be used to highlight significant messages");
   einfo (INFO, "  This can be controlled by:");
-  einfo (INFO, "    --disable-colour          Disables coloured messages");
+  einfo (INFO, "    --disable-colour          Disables coloured messages (default if attached to a pipe or file)");
   einfo (INFO, "    --disable-color           Disables colored messages");
-  einfo (INFO, "    --enable-colour           Enables coloured messages");
+  einfo (INFO, "    --enable-colour           Enables coloured messages (default if attached to a terminal)");
   einfo (INFO, "    --enable-color            Enables colored messages");
 
-  einfo (INFO, "  By default annocheck will warn if it encounters notes made by a\n");
+  einfo (INFO, "  By default the tool will display \"PASS: <file name>\" if a binary passes all of the tests");
+  einfo (INFO, "   and (if running in verbose mode) \"<file name> PASS: <test name> for individual tests that pass");
+  einfo (INFO, "  This can be unhelpful if lots of binaries are being tested and only the failures are interesting");
+  einfo (INFO, "  So the PASS lines can be controlled by:");
+  einfo (INFO, "    --skip-passes             Display PASS results (default)");
+  einfo (INFO, "    --no-skip-passes          Do not display PASS results for individual tests or in the summary");
+
+  einfo (INFO, "  By default the tool will show cumulative results when examining more than one binary");
+  einfo (INFO, "  This can be controlled by:");
+  einfo (INFO, "    --show-totals             Enables the display of cumulative results (default)");
+  einfo (INFO, "    --no-show-totals          Disables the display of cumulative results");
+
+  einfo (INFO, "  By default the tool will skip some tests for binaries known to special cases");
+  einfo (INFO, "  This can be controlled by:");
+  einfo (INFO, "    --allow-exceptions        Allow special cases to skip certain tests (default)");
+  einfo (INFO, "    --no-allow-exceptions     Do not allow special cases to skip tests");
+  
+  einfo (INFO, "  By default the tool will warn if it encounters notes made by a\n");
   einfo (INFO, "  plugin not built for the version of the compiler being used."); 
   einfo (INFO, "  This can be changed with:");
   einfo (INFO, "     --suppress-version-warnings  Stop warnings about version mismatches");
@@ -8614,7 +10169,7 @@ usage (void)
   einfo (INFO, "  And re-enabled with:");
   einfo (INFO, "    --provide-urls            Include URLs in error messages");
 
-  einfo (INFO, "  By default annocheck will only report failing tests, and will\n");
+  einfo (INFO, "  By default the tool will only report failing tests, and will\n");
   einfo (INFO, "  not report multiple failures for a single test.  This can be\n");
   einfo (INFO, "  changed to reporting the pass/fail status of all (enabled) tests\n");
   einfo (INFO, "  as well reporting all the detected causes of failure for any failing\n");
@@ -8623,32 +10178,59 @@ usage (void)
 }
 
 static void
-enable_test (enum test_index test)
+disable_test (enum test_index t)
 {
-  if (test >= TEST_MAX)
+  if (t >= TEST_MAX)
     return; /* FIXME: Should really ICE here.  */
 
-  tests[test].enabled = true;
-  tests[test].set_by_user = true;
+  tests[t].enabled = false;
+  tests[t].set_by_user = true;
 }
 	     
 static void
-disable_test (enum test_index test)
+enable_test (enum test_index t)
 {
-  if (test >= TEST_MAX)
+  if (t >= TEST_MAX)
     return; /* FIXME: Should really ICE here.  */
 
-  tests[test].enabled = false;
-  tests[test].set_by_user = true;
+  tests[t].enabled = true;
+  tests[t].set_by_user = true;
+
+  if (tests[t].future)
+    enable_future_tests = true;
+
+  if (t == TEST_BRANCH_PROTECTION)
+    {
+      disable_test (TEST_NOT_BRANCH_PROTECTION);
+      enable_test (TEST_PROPERTY_NOTE);
+    }
+
+  if (t == TEST_DYNAMIC_TAGS)
+    disable_test (TEST_NOT_DYNAMIC_TAGS);
 }
 	     
 static bool
-process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
+process_arg (const char *   arg,
+	     const char **  argv ATTRIBUTE_UNUSED,
+	     const uint     argc ATTRIBUTE_UNUSED,
+	     uint *         next ATTRIBUTE_UNUSED)
 {
   if (arg[0] == '-')
     ++ arg;
   if (arg[0] == '-')
     ++ arg;
+
+  if (streq (arg, "skip-passes"))
+    {
+      skip_passes = true;
+      return true;
+    }
+
+  if (streq (arg, "do-not-skip-passes") || streq (arg, "no-skip-passes"))
+    {
+      skip_passes = false;
+      return true;
+    }
 
   if (startswith (arg, "skip-"))
     {
@@ -8679,6 +10261,13 @@ process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
 	  return true;
 	}
 
+      /* Old name for the loadable segments test.  */
+      if (streq (arg, "rwx-seg"))
+	{
+	  disable_test (TEST_LOAD_SEGMENTS);
+	  return true;
+	}
+	    
       if ((funcname = strchr (arg, '=')) != NULL)
 	{
 	  ++ funcname;
@@ -8743,13 +10332,20 @@ process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
 	  return true;
 	}
 
+      /* Old name for the loadable segments test.  */
+      if (streq (arg, "rwx-seg"))
+	{
+	  enable_test (TEST_LOAD_SEGMENTS);
+	  return true;
+	}
+	    
       if (streq (arg, "rhivos"))
 	{
 	  /* Make sure that some of the other tests are also enabled.  */
 	  enable_test (TEST_BIND_NOW);
 	  enable_test (TEST_GNU_RELRO);
 	  enable_test (TEST_GNU_STACK);
-	  enable_test (TEST_RWX_SEG);
+	  enable_test (TEST_LOAD_SEGMENTS);
 	  enable_test (TEST_RUN_PATH);
 
 	  /* Carry on the enable the rhivos test itself.  */
@@ -8760,9 +10356,6 @@ process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
 	  if (streq (arg, tests[i].name))
 	    {
 	      enable_test (i);
-
-	      if (tests[i].future)
-		enable_future_tests = true;
 
 	      return true;
 	    }
@@ -8787,6 +10380,18 @@ process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
       return false;
     }
 
+  if (startswith (arg, "enable-future"))
+    {
+      enable_future_tests = true;
+      return true;
+    }
+					
+  if (startswith (arg, "disable-future"))
+    {
+      enable_future_tests = false;
+      return true;
+    }
+					
   if (streq (arg, "enable-hardened") || streq (arg, "enable"))
     {
       disabled = false;
@@ -8826,6 +10431,30 @@ process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
   if (streq (arg, "enable-colour") || streq (arg, "enable-color"))
     {
       enable_colour = true;
+      return true;
+    }
+
+  if (streq (arg, "show-totals"))
+    {
+      show_totals = true;
+      return true;
+    }
+
+  if (streq (arg, "do-not-show-totals") || streq (arg, "no-show-totals"))
+    {
+      show_totals = false;
+      return true;
+    }
+
+  if (streq (arg, "allow-exceptions"))
+    {
+      allow_exceptions = true;
+      return true;
+    }
+
+  if (streq (arg, "no-allow-exceptions"))
+    {
+      allow_exceptions = false;
       return true;
     }
 
@@ -8893,9 +10522,9 @@ process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
 
 	      for (j = 0; j < MAX_NAMES; j++)
 		{
-		  if (profiles[i].name[j] == NULL)
+		  if (profiles[i].names[j] == NULL)
 		    break;
-		  if (streq (arg, profiles[i].name[j]))
+		  if (streq (arg, profiles[i].names[j]))
 		    {
 		      selected_profile = i;
 		      return true;
@@ -8911,6 +10540,122 @@ process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
     }
 
   return false;
+}
+
+static void
+annobin_start_scan (uint          level ATTRIBUTE_UNUSED,
+		    const char *  datafile ATTRIBUTE_UNUSED)
+{
+  //  results.total = results.passes = results.fails = results.maybes = 0;
+}
+
+static void
+annobin_end_scan (uint level, const char * datafile)
+{
+  if (disabled)
+    return;
+
+  if (! show_totals)
+    return;
+
+  // When displaying the results for a lot of files, the earlier results may
+  // scroll off the top of the screen.  So provide a summary for the user.
+  if (level > 0 && results.total > 1)
+    {
+      if (skip_passes 
+	  && results.maybes == 0
+	  && results.fails == 0)
+	;
+      else
+	{
+	  einfo (PARTIAL, "Totals: Files Examined: %u ==> Passed: %u ",
+		 results.total, results.passes);
+
+	  if (results.fails)
+	    go_red ();
+	  einfo (PARTIAL, "Failed: %u ", results.fails);
+	  go_default_colour ();
+
+	  if (results.maybes)
+	    {
+	      go_gold ();
+	      einfo (PARTIAL, "Failed because of Maybes: %u", results.maybes);
+	    }
+
+	  go_default_colour ();
+	  einfo (PARTIAL, "\n");
+	}
+    }
+
+  if (datafile == NULL)
+    return;
+
+  FILE * f = fopen (datafile, "r");
+  if (f != NULL)
+    {
+      uint total, passed, failed, maybed;
+      int result;
+
+      einfo (VERBOSE2, "Loading recursed hardened data from %s", datafile);
+
+      result = fscanf (f, "%u %u %u %u\n", & total, & passed, & failed, & maybed);
+      fclose (f);
+
+      if (result != 4)
+	{
+	  if (level != 0)
+	    einfo (WARN, "unable to parse the contents of %s", datafile);
+	  return;
+	}
+
+      results.total  += total;
+      results.passes += passed;
+      results.fails  += failed;
+      results.maybes += maybed;
+    }
+
+  if (level == 0)
+    {
+      if (results.total > 1)
+	{
+	  // Note - we do not honour skip_passes here, because if every file
+	  // has passed their tests we would not actually show any results
+	  // at all.
+	  einfo (PARTIAL, "Final totals: Files Examined: %u Passed: %u ",
+		 results.total, results.passes);
+	  if (results.fails)
+	    go_red ();
+	  einfo (PARTIAL, "Failed: %u ", results.fails);
+	  if (results.maybes)
+	    go_gold ();
+	  einfo (PARTIAL, "Failed by MAYB results: %u", results.maybes);
+	  go_default_colour ();
+	  einfo (PARTIAL, "\n");
+	}
+
+      unlink (datafile);
+    }
+  else
+    {
+      einfo (VERBOSE2, "Storing size data in %s", datafile);
+
+      /* Write the accumulated sizes into the file.  */
+      f = fopen (datafile, "w");
+
+      if (f == NULL)
+	{
+	  einfo (WARN, "Unable to open datafile %s", datafile);
+	  return;
+	}
+
+      fprintf (f, "%u %u %u %u\n",
+	       results.total,
+	       results.passes,
+	       results.fails,
+	       results.maybes);
+
+      fclose (f);
+    }
 }
 
 /* -------------------------------------------------------------------------------------------- */
@@ -8932,8 +10677,8 @@ static struct checker hardened_checker =
   process_arg,
   usage,
   version,
-  NULL, /* start_scan */
-  NULL, /* end_scan */
+  annobin_start_scan,
+  annobin_end_scan,
   NULL, /* internal */
 };
 
@@ -9079,8 +10824,8 @@ libannocheck_finish (libannocheck_internals_ptr handle)
 }
 
 const char *
-libannocheck_get_error_message (libannocheck_internals_ptr handle ATTRIBUTE_UNUSED,
-				enum libannocheck_error err)
+libannocheck_get_error_message (libannocheck_internals_ptr  handle ATTRIBUTE_UNUSED,
+				enum libannocheck_error     err)
 {
   if (cached_reason != NULL)
     return cached_reason;
@@ -9106,7 +10851,7 @@ libannocheck_get_error_message (libannocheck_internals_ptr handle ATTRIBUTE_UNUS
 unsigned int
 libannocheck_get_version (void)
 {
-  return LIBANNOCHECK_VERSION;
+  return (unsigned int) LIBANNOCHECK_VERSION;
 }
 
 libannocheck_error
@@ -9234,10 +10979,10 @@ libannocheck_enable_profile (libannocheck_internals_ptr handle, const char * nam
 
   for (i = ARRAY_SIZE (profiles); i--;)
     {
-      if (profiles[i].name[0] == NULL)
+      if (profiles[i].names[0] == NULL)
 	continue;
 
-      if (streq (name, profiles[i].name[0]))
+      if (streq (name, profiles[i].names[0]))
 	{
 	  unsigned int j;
 
@@ -9302,7 +11047,7 @@ libannocheck_run_tests (libannocheck_internals_ptr  handle,
     return set_error (libannocheck_error_bad_arguments, "NULL passed as argument");
 
   if (handle->debugpath)
-    set_debug_file (handle->debugpath);
+    annocheck_set_debug_file (handle->debugpath);
 
   unsigned int i;
   for (i = 0; i < TEST_MAX; i++)
@@ -9314,13 +11059,13 @@ libannocheck_run_tests (libannocheck_internals_ptr  handle,
 
   per_file.num_skip = per_file.num_pass = per_file.num_fails = per_file.num_maybes = 0;
 
-  /* We do not check the return value from process_file() because it
+  /* We do not check the return value from annocheck_process_file() because it
      will return false if any of the tests FAILed, even if the tests
      were run successfully.  Likewise it will return false if there
      were real problems, like the file not being found, and so on.  */
-  (void) process_file (handle->filepath);
+  (void) annocheck_process_file (handle->filepath);
 
-  /* So instead we consider process_file() to have failed if no tests
+  /* So instead we consider annocheck_process_file() to have failed if no tests
      were even attempted.  */
   if (per_file.num_pass == 0
       && per_file.num_skip == 0
@@ -9332,7 +11077,7 @@ libannocheck_run_tests (libannocheck_internals_ptr  handle,
   * num_mayb_return = per_file.num_maybes;
 
   if (handle->debugpath)
-    set_debug_file (NULL);
+    annocheck_set_debug_file (NULL);
 
   return libannocheck_error_none;
 }

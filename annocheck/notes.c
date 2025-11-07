@@ -1,5 +1,5 @@
 /* Displays the Annobin notes in binary files.
-   Copyright (C) 2019-2024 Red Hat.
+   Copyright (C) 2019-2025 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published
@@ -67,7 +67,7 @@ notes_start_file (annocheck_data * data)
 }
 
 static bool
-notes_interesting_sec (annocheck_data *     data,
+notes_interesting_sec (annocheck_data *     data ATTRIBUTE_UNUSED,
 		       annocheck_section *  sec)
 {
   if (disabled)
@@ -118,7 +118,7 @@ notes_walk (annocheck_data *     data,
 	    GElf_Nhdr *          note,
 	    size_t               name_offset,
 	    size_t               data_offset,
-	    void *               ptr)
+	    void *               ptr ATTRIBUTE_UNUSED)
 {
   if (note->n_type != NT_GNU_BUILD_ATTRIBUTE_OPEN
       && note->n_type != NT_GNU_BUILD_ATTRIBUTE_FUNC)
@@ -269,7 +269,7 @@ display_GOW_values (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
 {
   einfo (PARTIAL, "GOW data: ");
 
-  if (value == -1)
+  if (value == (unsigned long) -1)
     {
       einfo (PARTIAL, "*unknown (-1)*\n");
       return false;
@@ -304,7 +304,7 @@ display_GOW_values (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
       if (value & (1 << 15))
 	einfo (PARTIAL, "-Wformat-security, ");
     }
-  if ((value && (3 << 14)) == 0)
+  if ((value & (3 << 14)) == 0)
     einfo (PARTIAL, "-Wall/-Wformat-security not used, ");
 	   
   if (BE_VERBOSE)
@@ -808,7 +808,7 @@ display_elf_notes (annocheck_data * data)
       switch (note->data[0])
 	{
 	case GNU_BUILD_ATTRIBUTE_VERSION:
-	  if (value == -1)
+	  if (value == (uint) -1)
 	    {
 	      einfo (PARTIAL, "Version: %s", note->data + 1);
 
@@ -834,7 +834,7 @@ display_elf_notes (annocheck_data * data)
 	  break;
 
 	case GNU_BUILD_ATTRIBUTE_TOOL:
-	  if (value == -1)
+	  if (value == (uint) -1)
 	    einfo (PARTIAL, "Tool: %s\n", note->data + 1);
 	  else
 	    einfo (PARTIAL, "Tool: %x (?)\n", value);
@@ -845,7 +845,7 @@ display_elf_notes (annocheck_data * data)
 	  break;
 
 	case GNU_BUILD_ATTRIBUTE_ABI:
-	  if (value == -1)
+	  if (value == (uint) -1)
 	    einfo (PARTIAL, "ABI: %s\n", note->data + 1);
 	  else
 	    einfo (PARTIAL, "ABI: %x\n", value);
@@ -988,6 +988,7 @@ notes_check_sec (annocheck_data *     data,
       return true;
 
     case SHT_STRTAB:
+    case SHT_PROGBITS:
       if (streq (sec->secname, ANNOBIN_STRING_SECTION_NAME))
 	return check_annobin_string_section (data, sec);
       /* Fall through.  */
@@ -1036,7 +1037,7 @@ notes_end_file (annocheck_data * data)
 }
 
 static bool
-notes_process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
+notes_process_arg (const char * arg, const char ** argv ATTRIBUTE_UNUSED, const uint argc ATTRIBUTE_UNUSED, uint * next ATTRIBUTE_UNUSED)
 {
   if (arg[0] == '-')
     ++ arg;

@@ -1,5 +1,5 @@
 /* annocheck - A tool for checking security features of binares.
-   Copyright (C) 2018-2024 Red Hat.
+   Copyright (C) 2018-2025 Red Hat.
    Created by Nick Clifton.
 
   This is free software; you can redistribute it and/or modify it
@@ -30,8 +30,12 @@
 /* Prefix used to isolate annobin symbols from program symbols.  */
 #define ANNOBIN_SYMBOL_PREFIX ".annobin_"
 
+#define ANNOCHECK_TMP_DEBUGINFO_DIR  "annocheck.debuginfo."
+#define ANNOCHECK_TMP_RPM_DIR        "annocheck.rpm."
+#define ANNOCHECK_TMP_DATA_DIR       "annocheck.data."
+
 /* -1: silent, 0: normal, 1: verbose, 2: very verbose.  */
-ulong         verbosity = 0;
+ulong verbosity = 0;
 
 enum ignore_enum
 {
@@ -43,14 +47,14 @@ enum ignore_enum
 static enum ignore_enum ignore_unknown = ignore_not_set;
 static enum ignore_enum ignore_links   = ignore_not_set;
 
-static const char *     progname;
 static const char *     debug_dir = NULL;
-static const char *     debug_file = NULL;
 static checker *        first_checker = NULL;
 static checker *        first_sec_checker = NULL;
 static checker *        first_seg_checker = NULL;
+static bool             just_one_tool = false;
 
 bool                    libannocheck_debugging = false;
+
 #ifdef LIBANNOCHECK
 static bool             in_libannocheck = true;
 #else
@@ -65,13 +69,48 @@ static const char *     full_progname;
 static char *           prefix = NULL;
 static uint             level = 0;
 static char *           saved_args = NULL;
-static const char *     debug_rpm = NULL;
 static const char *     debug_rpm_dir = NULL;
 static const char *     tmpdir = NULL;
 #if HAVE_LIBDEBUGINFOD
 static bool             use_debuginfod = true;
 #endif
 #endif
+
+typedef struct file_list
+{
+  const char *        filename;
+  struct file_list *  next;
+} file_list;
+
+#ifndef LIBANNOCHECK
+static file_list * debug_rpm_list  = NULL;
+#endif
+static file_list * debug_file_list = NULL;
+
+static void
+add_file_to_list (const char * filename, struct file_list ** list)
+{
+  struct file_list * node = XNEW (struct file_list);
+
+  node->filename = strdup (filename);
+  node->next     = * list;
+
+  * list = node;
+}
+
+static void
+free_file_list (struct file_list ** list)
+{
+  struct file_list * next = * list;
+
+  while (next != NULL)
+    {
+      next = next->next;
+      free ((void *) (* list)->filename);
+      free (* list);
+      * list = next;
+    }
+}
 
 typedef struct checker_internal
 {
@@ -102,7 +141,6 @@ typedef struct checker_internal
 #define COMPONENT_NAME_DEPTH 4
 static const char * component_names[COMPONENT_NAME_DEPTH] = {[0] = "annocheck"};
 static unsigned int component_name_index = 0;
-#define CURRENT_COMPONENT_NAME component_names[component_name_index]
 
 static void
 push_component (checker * tool)
@@ -134,18 +172,14 @@ fatal (const char * message)
 }
 
 /* -------------------------------------------------------------------- */
-/* Print a message on stdout or stderr.  Returns FALSE (for error
-   messages) so that it can be used as a terminator in boolean functions.  */
-
-bool
-einfo (einfo_type type, const char * format, ...)
+static bool
+anno_info (einfo_type type, uint index, const char * filename, const char * format, va_list args)
 {
   if (in_libannocheck && ! libannocheck_debugging)
     return type == VERBOSE || type == VERBOSE2 || type == INFO || type == PARTIAL;
-  
+
   FILE *        file;
   const char *  pref = NULL;
-  va_list       args;
   bool          res = false;
 
   switch (type)
@@ -155,28 +189,27 @@ einfo (einfo_type type, const char * format, ...)
       pref = "Warning";
       file = stderr;
       break;
+
     case ERROR:
     case SYS_ERROR:
       pref = "Error";
       file = stderr;
       break;
+
     case FAIL:
       pref = "Internal Failure";
       file = stderr;
       break;
+
+    case PREFIXED:
+    case INFO:
+    case PARTIAL:
     case VERBOSE2:
     case VERBOSE:
       file = stdout;
       res  = true;
       break;
-    case INFO:
-      file = stdout;
-      res  = true;
-      break;
-    case PARTIAL:
-      file = stdout;
-      res  = true;
-      break;
+
     default:
       fatal ("Unknown einfo type");
     }
@@ -190,39 +223,87 @@ einfo (einfo_type type, const char * format, ...)
   fflush (stdout);
 
   if (type != PARTIAL)
-    fprintf (file, "%s: ", CURRENT_COMPONENT_NAME);
+    fprintf (file, "%s: ", component_names[index]);
 
   const char *  do_newline;
   char          c;
   size_t        len = strlen (format);
 
   if (len < 1)
-    fatal ("einfo called without a valid format string");
+    fatal ("info called without a valid format string");
   c = format[len - 1];
   if (c == '\n' || c == ' ')
     do_newline = "";
-  else if (c == '.' || c == ':')
+  else if (c == '.' || c == ':' || c == '!')
     do_newline = "\n";
   else
     do_newline = ".\n";
 
+#ifndef LIBANNOCHECK
+  if (type == PREFIXED && prefix != NULL && prefix[0] != 0)
+    fprintf (file, "%s: ", prefix);
+#endif
+
+  if (filename != NULL)
+    fprintf (file, "%s: ", filename);
+
   if (pref)
     fprintf (file, "%s: ", pref);
 
-#ifndef LIBANNOCHECK
-  if (!PARTIAL && prefix != NULL && prefix[0] != 0)
-    fprintf (file, "%s ", prefix);
-#endif
-
-  va_start (args, format);
   vfprintf (file, format, args);
-  va_end (args);
 
   if (type == SYS_WARN || type == SYS_ERROR)
     fprintf (file, ": system error: %s", strerror (errno));
 
   if (type != PARTIAL)
     fprintf (file, "%s", do_newline);
+
+  return res;
+}
+
+/* Print a message on stdout or stderr.  Returns FALSE (for error
+   messages) so that it can be used as a terminator in boolean functions.  */
+
+bool
+einfo (einfo_type type, const char * format, ...)
+{
+  va_list args;
+
+  va_start (args, format);
+  bool res = anno_info (type, component_name_index, NULL, format, args);
+  va_end (args);
+
+  return res;
+}
+
+/* Like einfo () but specific to annocheck itself.  ie it is not used
+   by any of the checkers.  The filename is extracted from the data structure.  */
+static bool adinfo (einfo_type, annocheck_data *, const char *, ...) ATTRIBUTE_PRINTF (3,4);
+
+static bool
+adinfo (einfo_type type, annocheck_data * data, const char * format, ...)
+{
+  va_list args;
+
+  va_start (args, format);
+  bool res = anno_info (type, 0, data->filename, format, args);
+  va_end (args);
+
+  return res;
+}
+
+/* Like adinfo() but takes a const char * filename argument instead of
+   a annocheck_data * argument.  This argument can be NULL.  */
+
+static bool afinfo (einfo_type, const char *, const char *, ...) ATTRIBUTE_PRINTF (3,4);
+static bool
+afinfo (einfo_type type, const char * filename, const char * format, ...)
+{
+  va_list args;
+
+  va_start (args, format);
+  bool res = anno_info (type, 0, filename, format, args);
+  va_end (args);
 
   return res;
 }
@@ -249,7 +330,7 @@ annocheck_walk_notes (annocheck_data * data, annocheck_section * sec, note_walke
   GElf_Nhdr  note;
   size_t     name_offset;
   size_t     data_offset;
-  
+
   while ((offset = gelf_getnote (sec->data, offset, & note, & name_offset, & data_offset)) != 0)
     if (! func (data, sec, & note, name_offset, data_offset, ptr))
       break;
@@ -294,7 +375,7 @@ read_section_header (annocheck_data * data, Elf_Scn * section, Elf64_Shdr * s64h
 
   return true;
 }
-  
+
 /* -------------------------------------------------------------------- */
 
 static bool
@@ -315,6 +396,7 @@ run_checkers (const char * filename, int fd, Elf * elf)
   data.dwarf_info.fd = -1;
   data.elf = elf;
   data.is_32bit = gelf_getclass (elf) == ELFCLASS32;
+  data.sep_debug_file_not_found = false;
 
   checker * tool;
 
@@ -331,15 +413,15 @@ run_checkers (const char * filename, int fd, Elf * elf)
 	((checker_internal *)(tool->internal))->skip = false;
     }
 
-  bool ret = true;  
+  bool ret = true;
 
   if (first_sec_checker != NULL)
     {
       size_t shstrndx;
 
       if (elf_getshdrstrndx (elf, & shstrndx) < 0)
-	return einfo (ERROR, "%s: Unable to locate string section", filename);
-	      
+	return afinfo (ERROR, filename, "Unable to locate string section");
+
       Elf_Scn * scn = NULL;
 
       while ((scn = elf_nextscn (elf, scn)) != NULL)
@@ -352,7 +434,7 @@ run_checkers (const char * filename, int fd, Elf * elf)
 	  if (! read_section_header (& data, scn, & sec.shdr))
 	    continue;
 
-	  sec.secname = elf_strptr (elf, shstrndx, sec.shdr.sh_name);	  
+	  sec.secname = elf_strptr (elf, shstrndx, sec.shdr.sh_name);
 	  if (sec.secname == NULL)
 	    continue;
 
@@ -375,7 +457,7 @@ run_checkers (const char * filename, int fd, Elf * elf)
 		    {
 		      sec.data = elf_getdata (scn, NULL);
 		      if (sec.data == NULL)
-			ret = einfo (ERROR, "Failed to read in section %s", sec.secname);
+			ret = afinfo (ERROR, filename, "Failed to read in section %s", sec.secname);
 		    }
 
 		  if (sec.data != NULL)
@@ -400,8 +482,8 @@ run_checkers (const char * filename, int fd, Elf * elf)
 
       for (cnt = 0; cnt < phnum; ++cnt)
 	{
-	  GElf_Phdr   mem;
-	  annocheck_segment seg;
+	  GElf_Phdr          mem;
+	  annocheck_segment  seg;
 
 	  memset (& seg, 0, sizeof seg);
 
@@ -411,7 +493,7 @@ run_checkers (const char * filename, int fd, Elf * elf)
 	  if (seg.phdr == NULL)
 	    /* Fuzzzing can produce segments like this.  */
 	    continue;
-			       
+
 	  for (tool = first_seg_checker; tool != NULL; tool = NEXT_SEG_CHECKER (tool))
 	    {
 	      if (((checker_internal *)(tool->internal))->skip || tool->interesting_seg == NULL)
@@ -463,9 +545,9 @@ run_checkers (const char * filename, int fd, Elf * elf)
 
 #ifndef LIBANNOCHECK
 static const char *
-itoa (uint level)
+itoa (uint lev)
 {
-  switch (level)
+  switch (lev)
     {
     case 0: return "0";
     case 1: return "1";
@@ -482,11 +564,11 @@ process_rpm_file (const char * filename)
      to use the rpm2cpio and cpio programs to unpack it for us...  */
   char dirname[32];
 
-  strcpy (dirname, "annocheck.rpm.XXXXXX");
+  strcpy (dirname, ANNOCHECK_TMP_RPM_DIR "XXXXXX");
   if (mkdtemp (dirname) == NULL)
-    return einfo (WARN, "Failed to create temporary directory for processing rpm: %s", filename);
+    return afinfo (WARN, filename, "Failed to create temporary directory for processing rpm");
 
-  einfo (VERBOSE2, "Created temporary directory for rpm processing: %s", dirname);
+  afinfo (VERBOSE2, dirname, "Created temporary directory for rpm processing");
 
   char * fname;
   char * pname;
@@ -519,7 +601,7 @@ process_rpm_file (const char * filename)
 		    "--prefix \"", lbasename (filename), "\"",
 		    /* Increment the recursion level.  */
 		    " --level ", itoa (level + 1),
-#if HAVE_LIBDEBUGINFOD && !defined LIBANNOCHECK 
+#if HAVE_LIBDEBUGINFOD && !defined LIBANNOCHECK
 		    use_debuginfod ? "" : " --no-use-debuginfod",
 #endif
 		    /* Pass on the name of the temporary data directory, if created.  */
@@ -530,7 +612,7 @@ process_rpm_file (const char * filename)
 		    " .",
 		    NULL);
 
-  einfo (VERBOSE2, "Running rpm extractor command sequence: %s", command);
+  afinfo (VERBOSE2, NULL, "Running rpm extractor command sequence: %s", command);
   fflush (stdin);
 
   int result = system (command);
@@ -541,7 +623,7 @@ process_rpm_file (const char * filename)
       free (fname);
       free (pname);
 
-      return einfo (WARN, "Failed to process rpm file: %s", filename);
+      return afinfo (WARN, filename, "Failed to process rpm file");
     }
 
   free (command);
@@ -552,60 +634,43 @@ process_rpm_file (const char * filename)
   /* Make sre that we have write permission on all of the files and directories.  */
   command = concat ("chmod -R u+w ", dirname, NULL);
   if (system (command))
-    einfo (WARN, "Failed to give write permission to %s and its contents", dirname);
+    afinfo (WARN, dirname, "Failed to give write permission to the directory and its contents");
   /* Delete the temporary directory.  */
   free (command);
+
+  /* Delete the temporary directory and its contents.  */
   command = concat ("rm -fr ", dirname, NULL);
   if (system (command))
-    einfo (WARN, "Failed to delete temporary directory: %s", dirname);
+    afinfo (WARN, dirname, "Failed to delete this temporary directory");
   free (command);
 
-  einfo (VERBOSE2, "RPM processed successfully");
+  afinfo (VERBOSE2, filename, "RPM processed successfully");
   return result == EXIT_SUCCESS;
 }
 
-/* Like process_rpm_file, except that the rpm is just
-   extracted and then left untouched.  Returns the name
-   of the directory holding the rpm contents.  */
-
-static const char *
-extract_rpm_file (const char * filename)
+static bool
+extract_rpm_into_dir (const char * rpm, const char * dirname)
 {
-  static char dirname[32];
-
-  if (debug_rpm_dir != NULL)
-    return debug_rpm_dir;
-
-  dirname[0] = 0;
-  strcpy (dirname, "annocheck.debuginfo.XXXXXX");
-  if (mkdtemp (dirname) == NULL)
-    {
-      einfo (ERROR, "Failed to create temporary directory for debuginfo extraction: %s", filename);
-      return NULL;
-    }
-
-  einfo (VERBOSE2, "Created temporary directory for debuginfo extraction: %s", dirname);
-
   char * fname;
-  char * command;
   char * cwd = getcwd (NULL, 0);
 
   /* If filename is a relative path, convert it to an absolute one
      so that it can be found once we change into the temporary directory.  */
-  if (filename[0] != '/')
-    fname = concat (cwd, "/", filename, NULL);
+  if (rpm[0] != '/')
+    fname = concat (cwd, "/", rpm, NULL);
   else
     /* This is just so that we can safely call free(fname) at the end.  */
-    fname = concat (filename, NULL);
+    fname = concat (rpm, NULL);
 
-  if (access (fname, F_OK) == -1) 
+  if (access (rpm, F_OK) == -1)
     {
-      einfo (SYS_ERROR, "Error reading rpm file file %s", fname);
-      free (fname);
+      afinfo (SYS_ERROR, fname, "Error reading rpm file");
       free (cwd);
-      return NULL;
+      free (fname);
+      return false;
     }
 
+  char * command;
   command = concat (/* Change into the temporary directory.  */
 		    "cd ", dirname,
 		    /* Convert the rpm to cpio format.  */
@@ -616,27 +681,141 @@ extract_rpm_file (const char * filename)
 		    " && cd ..",
 		    NULL);
 
-  einfo (VERBOSE2, "Running rpm extractor command sequence: %s", command);
+  afinfo (VERBOSE2, NULL, "Running rpm extractor command sequence: %s", command);
   fflush (stdin);
-  
+
   if (system (command))
     {
-      einfo (WARN, "Failed to extract rpm file: %s", filename);
+      afinfo (WARN, rpm, "Failed to extract rpm file");
       free (command);
       free (cwd);
       free (fname);
-      return NULL;
+      return false;
     }
 
   free (command);
   free (cwd);
   free (fname);
 
-  einfo (VERBOSE2, "Extraction successful");
-  return debug_rpm_dir = dirname;
+  return afinfo (VERBOSE2, rpm, "extracted into %s", dirname);
+}
+
+static void
+save_arg (const char * arg)
+{
+  if (saved_args)
+    {
+      char * new_saved_args = concat (saved_args, " ", arg, NULL);
+      free (saved_args);
+      saved_args = new_saved_args;
+    }
+  else
+    saved_args = concat (arg, NULL);
+}
+
+/* Extract the list of debug rpms into a temporary directory.
+   Returns the name of the directory holding the rpms' contents.  */
+
+static const char *
+extract_debug_rpm_files (void)
+{
+  bool using_tmpdir = false;
+
+  if (debug_rpm_dir != NULL)
+    return debug_rpm_dir;
+
+  if (debug_dir == NULL)
+    {
+      char * tmp_debug_dir;
+
+      if (asprintf (& tmp_debug_dir, ANNOCHECK_TMP_DEBUGINFO_DIR "XXXXXX") == -1)
+	{
+	  afinfo (ERROR, tmp_debug_dir, "Failed to allocate temporary directory name for debuginfo extraction");
+	  return NULL;
+	}
+
+      if (mkdtemp (tmp_debug_dir) == NULL)
+	{
+	  afinfo (ERROR, tmp_debug_dir, "Failed to create temporary directory for debuginfo extraction");
+	  free ((void *) tmp_debug_dir);
+	  return NULL;
+	}
+
+      afinfo (VERBOSE2, tmp_debug_dir, "Created temporary directory for debuginfo extraction");
+      debug_dir = tmp_debug_dir;
+      using_tmpdir = true;
+
+      char * cwd = getcwd (NULL, 0);
+      const char * tmp = concat ("--debug-dir=", cwd, "/", tmp_debug_dir, NULL);
+      save_arg (tmp);
+      free ((void *) tmp);
+      free ((void *) cwd);
+    }
+
+  bool res = true;
+  struct file_list * r;
+
+  for (r = debug_rpm_list; r != NULL; r = r->next)
+    res &= extract_rpm_into_dir (r->filename, debug_dir);
+
+  if (res)
+    {
+      afinfo (VERBOSE2, NULL, "Extraction of debug rpms successful");
+      return debug_rpm_dir = debug_dir;
+    }
+  else
+    {
+      afinfo (VERBOSE2, NULL, "Extraction of debug rpms failed");
+
+      if (using_tmpdir)
+	{
+	  char * command = concat ("rm -fr ", debug_dir, NULL);
+	  if (system (command))
+	    afinfo (WARN, debug_dir, "Failed to delete temporary directory");
+	  free (command);
+	  free ((void *) debug_dir);
+	  debug_dir = NULL;
+	}
+
+      return NULL;
+    }
 }
 
 #endif /* not LIBANNOCHECK */
+
+/* WARNING:  This function has proven to be unreliable.  Older
+   versions of the dwelf library do not always detect links properly.
+   See RHEL-79264 for an example of this.  */
+bool
+annocheck_has_separate_debuginfo_link (Dwarf * dwarf)
+{
+  GElf_Word crc = 0;
+
+  if (dwelf_elf_gnu_debuglink (dwarf_getelf (dwarf), & crc) != NULL)
+    return true;
+
+  const char * name = NULL;
+  const void * buildid = NULL;
+
+  if (dwelf_dwarf_gnu_debugaltlink (dwarf, & name, & buildid) > 0)
+    return true;
+
+  return false;
+}
+
+bool
+annocheck_debuginfod_enabled (void)
+{
+#ifndef LIBANNOCHECK
+#if HAVE_LIBDEBUGINFOD
+  return getenv (DEBUGINFOD_URLS_ENV_VAR) != NULL;
+#else
+  return false;
+#endif
+#else
+  return false;
+#endif
+}
 
 static char * debuginfo_path = NULL;
 static const Dwfl_Callbacks dwfl_callbacks =
@@ -651,51 +830,56 @@ static const Dwfl_Callbacks dwfl_callbacks =
   do									\
     {									\
       if (debugfile == NULL)						\
-	return false; /* Pacify Address Sanitizer.  */			\
+	goto return_fail; /* Pacify Address Sanitizer.  */		\
+      									\
       sprintf (debugfile, format, args);				\
-einfo (data->dwarf_info.warned == 1 ? VERBOSE : VERBOSE2, "%s:  try: %s", data->filename, debugfile);	\
+      adinfo (data->dwarf_info.warned == 1 ? VERBOSE : VERBOSE2,	\
+	      data, "try: %s", debugfile);				\
       if ((fd = open (debugfile, O_RDONLY)) != -1)			\
-	goto found;							\
+	goto return_success;						\
     }									\
   while (0)
 
+
+/* Attempts to open a separate debuginfo file associated with DATA.
+   If successful returns TRUE and puts the filename in FILENAME_RETURN and
+   the opened file descriptor in FD_RETURN.  It is the caller's responsibility
+   to free the memory pointed to by FILENAME_RETURN and to close FD_RETURN.
+
+   Upon failure, returns FALSE and puts the name of the expected debug info
+   file (if any) into FILENAME_RETURN.  FD_RETURN is not set.  The string
+   returned in FILENAME_RETURN should *not* be freed.  */
+
 bool
-annocheck_follow_debuglink (annocheck_data * data)
+annocheck_open_separate_debuginfo_file (annocheck_data * data, char ** filename_return, int * fd_return)
 {
-  char *  build_id_name = NULL;
+  size_t  canon_dirlen = 0;
   char *  canon_dir = NULL;
+  int     fd = -1;
   char *  debugfile = NULL;
-  int     fd;
+  char *  build_id_name = NULL;
 
-  if (data->filename == NULL)
-    return false;
+  adinfo (data->dwarf_info.warned == 1 ? VERBOSE : VERBOSE2,
+	  data, "Attempting to locate separate debuginfo file");
 
-  /* Initialise the dwarf specific fields of the data structure.  */
-  if (data->dwarf_info.dwfl)
-    dwfl_end (data->dwarf_info.dwfl); /* Also closes data->dwarf_info.dwarf.  */
-  data->dwarf_info.dwarf = NULL;
-  data->dwarf_info.dwfl = NULL;
-  if (data->dwarf_info.fd != -1 && data->dwarf_info.fd != data->fd)
-    close (data->dwarf_info.fd);
-  data->dwarf_info.fd = -1;
-  data->dwarf_info.filename = NULL;
+  /* If we have a list of files to try, test them first.  */
+  if (debug_file_list)
+    {
+      struct file_list * f;
 
-  if (data->dwarf_info.warned > 1)
-    /* We have already tried twice.  Do not try any more times.  */
-    return false;
+      for (f = debug_file_list; f != NULL; f = f->next)
+	{
+	  debugfile = (char *) xmalloc (strlen (f->filename) + 2);
+	  TRY_DEBUG ("%s", f->filename);
+	  free (debugfile);
+	}
 
-  /* First try the build-id method.  */
+      debugfile = NULL;
+    }
+
+  /* Next try the build-id method.  */
   ssize_t       build_id_len = 0;
   const void *  build_id_ptr = NULL;
-
-  einfo (VERBOSE2, "%s: Attempting to locate separate debuginfo file", data->filename);
-
-  if (debug_file)
-    {
-      debugfile = (char *) xmalloc (strlen (debug_file) + 2);
-      TRY_DEBUG ("%s", debug_file);
-      free (debugfile);
-    }
 
   build_id_len = dwelf_elf_gnu_build_id (data->elf, & build_id_ptr);
   if (build_id_len > 0)
@@ -703,9 +887,9 @@ annocheck_follow_debuglink (annocheck_data * data)
       /* Compute the path to the debuginfo from the build id.
 	 Since we know that we are running on a Fedora/RHEL
 	 system we can just check the standard Fedora location:
-	 
+
 	  /usr/lib/debug/.build-id/NN/NN+NN.debug
-	  
+
 	where NNNN+NN is the build-id value as a hexadecimal
 	string.  */
 
@@ -716,38 +900,41 @@ annocheck_follow_debuglink (annocheck_data * data)
       char             build_id_dir[3];
       char *           n;
 
-      einfo (VERBOSE2, "%s: Testing possibilities based upon the build-id", data->filename);
+      adinfo (VERBOSE2, data, "Testing possibilities based upon the build-id");
 
-#ifndef LIBANNOCHECK      
-      if (debug_rpm)
-	/* If the user has told us an rpm file that contains
-	   debug information then extract it and use it.  */
-	path = extract_rpm_file (debug_rpm);
+#ifdef LIBANNOCHECK
+      if (debug_dir)
+	path = debug_dir;
+#else
+      if (debug_rpm_list != NULL)
+	{
+	  /* If the user has told us to use some rpm file(s) that
+	     contain debug information then extract then now.  */
+	  path = extract_debug_rpm_files ();
+	}
       else
 	{
-#endif
 	  if (debug_dir)
 	    path = debug_dir;
-#ifndef LIBANNOCHECK
 	}
 #endif
 
       if (path == NULL)
 	path = "";
-      
+
       debugfile = xmalloc (strlen (leadin)
 			   + strlen (path)
 			   + len * 2
 			   + strlen (".debug") + 6);
-      
+
       sprintf (build_id_dir, "%02x", * d++);
       len --;
       build_id_name = n = xmalloc (len * 2 + 1);
       while (len --)
-	n += sprintf (n, "%02x", *d++);      
+	n += sprintf (n, "%02x", *d++);
 
-      einfo (VERBOSE2, "%s: build_id_len: %lu, name: %s", data->filename,
-	     (unsigned long) build_id_len, build_id_name);
+      adinfo (VERBOSE2, data, "build_id_len: %lu, string: %s",
+	      (unsigned long) build_id_len, build_id_name);
 
       if (* path)
 	{
@@ -769,11 +956,14 @@ annocheck_follow_debuglink (annocheck_data * data)
       /* For cases where we are examining an unpacked rpm with an unpacked debug rpm,
          try without the leading / character.  */
       TRY_DEBUG ("%s/%s/%s.debug", leadin + 1, build_id_dir, build_id_name);
-      
+
       free (debugfile);
+      debugfile = NULL;
+
       free (build_id_name);
       build_id_name = NULL;
-      einfo (VERBOSE2, "%s: Could not find separate debuginfo file based on build-id", data->filename);
+
+      adinfo (VERBOSE2, data, "Could not find separate debuginfo file based on build-id");
     }
 
   /* Now try using a .gnu.debuglink section.  */
@@ -782,20 +972,18 @@ annocheck_follow_debuglink (annocheck_data * data)
 
   if ((link = dwelf_elf_gnu_debuglink (data->elf, & crc)) == NULL)
     {
-      einfo (VERBOSE2, "%s: Does not have a separate debug file", data->filename);
-      return NULL;
+      adinfo (VERBOSE2, data, "Does not have a separate debug file");
+      goto return_fail;
     }
 
-  einfo (VERBOSE2, "%s: Testing possibilities based upon debuglink section(s)", data->filename);
-
-  size_t canon_dirlen;
+  adinfo (VERBOSE2, data, "Testing possibilities based upon debuglink section(s)");
 
   /* Attempt to locate the separate file.  */
- canon_dir = realpath (data->filename, NULL);
+  canon_dir = realpath (data->full_filename, NULL);
   if (canon_dir == NULL)
     {
       /* This can happen if we are examining an rpm which does not have an installed counterpart.  */
-      einfo (VERBOSE2, "%s: Could not extract filename: %s", data->filename, strerror (errno));
+      adinfo (VERBOSE2, data, "Could not extract filename: %s", strerror (errno));
       canon_dir = strdup (data->filename);
     }
 
@@ -811,13 +999,18 @@ annocheck_follow_debuglink (annocheck_data * data)
 #define DEBUGDIR_2 "/usr/lib/debug"
 #define DEBUGDIR_3 "/usr/lib/debug/usr"
 #define DEBUGDIR_4 "/usr/lib/debug/usr/bin"
-#define DEBUGDIR_5 "/usr/lib/debug/usr/lib64"
+#define DEBUGDIR_5 "/usr/lib/debug/usr/sbin"
+#define DEBUGDIR_6 "/usr/lib/debug/usr/lib64"
+#define DEBUGDIR_7 "/usr/lib/debug/usr/lib"
 
+  /* The malloc amount is excessive, but better safe than sorry.  */
   debugfile = (char *) xmalloc (strlen (DEBUGDIR_1) + 1
 				+ strlen (DEBUGDIR_2)
 				+ strlen (DEBUGDIR_3)
 				+ strlen (DEBUGDIR_4)
 				+ strlen (DEBUGDIR_5)
+				+ strlen (DEBUGDIR_6)
+				+ strlen (DEBUGDIR_7)
 				+ (debug_dir ? strlen (debug_dir) : 1)
 				+ canon_dirlen
 				+ strlen (".debug/")
@@ -827,21 +1020,28 @@ annocheck_follow_debuglink (annocheck_data * data)
   /* If we have been provided with a debug directory, try that first.  */
   if (debug_dir)
     {
+      adinfo (VERBOSE2, data, "Trying possibilities based upon a debug directory of: %s", debug_dir);
+
       TRY_DEBUG ("%s/%s", debug_dir, link);
 
       /* Then try the usual sub-directories of that directory.  */
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  DEBUGDIR_2 + 1, link);
-      TRY_DEBUG ("%s/%s%s%s", debug_dir, DEBUGDIR_2 + 1, canon_dir, link);
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  DEBUGDIR_3 + 1, link);
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  DEBUGDIR_4 + 1, link);
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  DEBUGDIR_1 + 1, link);
+      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_1[1], link);
+      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_2[1], link);
+      TRY_DEBUG ("%s/%s%s%s", debug_dir, & DEBUGDIR_2[1], canon_dir, link);
+      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_3[1], link);
+      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_4[1], link);
+      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_5[1], link);
+      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_6[1], link);
+      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_7[1], link);
+
+      adinfo (VERBOSE2, data, "Could not find the file in the debug directory");
     }
-  
+
 #ifndef LIBANNOCHECK
   /* If we have been pointed at a debuginfo rpm then try that next.  */
-  if (debug_rpm)
+  if (debug_rpm_list != NULL)
     {
-      const char * dir = extract_rpm_file (debug_rpm);
+      const char * dir = extract_debug_rpm_files ();
       if (dir != NULL)
 	{
 	  TRY_DEBUG ("./%s/%s", dir, link);
@@ -850,10 +1050,12 @@ annocheck_follow_debuglink (annocheck_data * data)
 	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_3, link);
 	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_4, link);
 	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_5, link);
+	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_6, link);
+	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_7, link);
 	}
     }
 #endif
-  
+
   /* Next try in the current directory.  */
   TRY_DEBUG ("./%s", link);
 
@@ -866,45 +1068,27 @@ annocheck_follow_debuglink (annocheck_data * data)
   /* And the .debug subdirectory of that directory.  */
   TRY_DEBUG ("%s.debug/%s", canon_dir, link);
 
-  /* Try the first extra debug file root.  */
-  TRY_DEBUG ("%s/%s", DEBUGDIR_2, link);
-
-  /* Try the first extra debug file root, with directory extensions.  */
-  TRY_DEBUG ("%s%s%s", DEBUGDIR_2, canon_dir, link);
-
-  /* Try the second extra debug file root.  */
-  TRY_DEBUG ("%s/%s", DEBUGDIR_3, link);
-
-  /* Try the fourth extra debug file root.  */
-  TRY_DEBUG ("%s/%s", DEBUGDIR_4, link);
-
   /* Then try in the global debugfile directory.  */
-  TRY_DEBUG ("%s/%s", DEBUGDIR_1, link);
+  TRY_DEBUG ("%s/%s",  DEBUGDIR_1, link);
+  TRY_DEBUG ("%s%s%s", DEBUGDIR_1, canon_dir, link);
+  TRY_DEBUG ("%s/%s",  DEBUGDIR_2, link);
+  TRY_DEBUG ("%s%s%s", DEBUGDIR_2, canon_dir, link);
+  TRY_DEBUG ("%s/%s",  DEBUGDIR_3, link);
+  TRY_DEBUG ("%s/%s",  DEBUGDIR_4, link);
+  TRY_DEBUG ("%s/%s",  DEBUGDIR_5, link);
+  TRY_DEBUG ("%s/%s",  DEBUGDIR_6, link);
+  TRY_DEBUG ("%s/%s",  DEBUGDIR_7, link);
 
   /* Try local version of the above.  */
-  TRY_DEBUG ("%s/%s", DEBUGDIR_2 + 1, link);
-  TRY_DEBUG ("%s%s%s", DEBUGDIR_2 + 1, canon_dir, link);
-  TRY_DEBUG ("%s/%s", DEBUGDIR_3 + 1, link);
-  TRY_DEBUG ("%s/%s", DEBUGDIR_4 + 1, link);
-  TRY_DEBUG ("%s/%s", DEBUGDIR_1 + 1, link);
-
-  /* Try the first extra debug file root, with directory extensions.  */
-  TRY_DEBUG ("%s%s%s", DEBUGDIR_2, canon_dir, link);
-
-  /* Try the second extra debug file root.  */
-  TRY_DEBUG ("%s/%s", DEBUGDIR_3, link);
-
-  /* Try the fourth extra debug file root.  */
-  TRY_DEBUG ("%s/%s", DEBUGDIR_4, link);
-
-  /* Then try in the global debugfile directory.  */
-  TRY_DEBUG ("%s/%s", DEBUGDIR_1, link);
-  
-  /* Then try in the global debugfile directory, with directory extensions.  */
-  TRY_DEBUG ("%s%s%s", DEBUGDIR_1, canon_dir, link);
-
-  /* Try the first extra debug file root, with directory extensions.  */
-  TRY_DEBUG ("%s%s%s", DEBUGDIR_2, canon_dir, link);
+  TRY_DEBUG ("%s/%s",  & DEBUGDIR_1[1], link);
+  TRY_DEBUG ("%s%s%s", & DEBUGDIR_1[1], canon_dir, link);
+  TRY_DEBUG ("%s/%s",  & DEBUGDIR_2[1], link);
+  TRY_DEBUG ("%s%s%s", & DEBUGDIR_2[1], canon_dir, link);
+  TRY_DEBUG ("%s/%s",  & DEBUGDIR_3[1], link);
+  TRY_DEBUG ("%s/%s",  & DEBUGDIR_4[1], link);
+  TRY_DEBUG ("%s/%s",  & DEBUGDIR_5[1], link);
+  TRY_DEBUG ("%s/%s",  & DEBUGDIR_6[1], link);
+  TRY_DEBUG ("%s/%s",  & DEBUGDIR_7[1], link);
 
   /* FIMXE: This is a workaround for a bug in the Fedora packaging
      system.  It is possible for the debuginfo files to be out of
@@ -933,64 +1117,124 @@ annocheck_follow_debuglink (annocheck_data * data)
     ;
   else if (build_id_len > 0)
     {
-      debuginfod_client *client = debuginfod_begin ();
+      debuginfod_client * client = debuginfod_begin ();
 
-      if (client != NULL)
+      if (client == NULL)
+	{
+	  adinfo (VERBOSE2, data, "unable to initialise debuginfod client");
+	}
+      else
         {
-	  TRY_DEBUG ("DEBUGINFOD_URLS=%s", getenv (DEBUGINFOD_URLS_ENV_VAR) ?: "" );
-	  
+	  free (debugfile);
+	  debugfile = NULL;
+
+	  adinfo (VERBOSE2, data, "Attempting to use debuginfod.  URLS = %s", getenv (DEBUGINFOD_URLS_ENV_VAR));
+
           /* If the debug file is successfully downloaded, debugfile will be
              set to the path of the local copy.  */
-          fd = debuginfod_find_debuginfo (client, build_id_ptr, build_id_len, & debugfile);
 
+	  /* FIXME: We should warn users if this is going to take a long time...  */
+          fd = debuginfod_find_debuginfo (client, build_id_ptr, build_id_len, & debugfile);
           debuginfod_end (client);
 
           if (fd >= 0)
             {
+#if 0
               /* Ensure file is read-only.  */
               close (fd);
               if ((fd = open (debugfile, O_RDONLY)) != -1)
-                goto found;
+		goto return_success;
+#else
+	      goto return_success;
+#endif
             }
         }
-      else
-	einfo (VERBOSE2, "%s: unable to initialise debuginfod client", data->filename);
     }
   else
-    einfo (VERBOSE2, "%s: no build-id found, so cannot query debuginfod service", data->filename);
+    {
+      adinfo (VERBOSE2, data, "no build-id found, so cannot query debuginfod service");
+    }
 #else
-  einfo (VERBOSE2, "%s: support for debuginfod not built into annocheck", data->filename);
+  adinfo (VERBOSE2, data, "support for debuginfod not built into annocheck");
 #endif /* HAVE_LIBDEBUGINFOD */
 #endif /* not LIBANNOCHECK */
 
-  /* Failed to find the file.  */
-  /* Note the ++ is a sneaky trick to set dwarf_info.warned to 1 for the first
-     failure, so that on the second attempt to locate the debuginfo files TRY_DEBUG
-     will print the attemps in VERBOSE mode instead of VERBOSE2 mode.  Also once
-     we have tried 2 times, there is a test at the start of this function to stop
-     us from wasting any more time.  */
-  if (data->dwarf_info.warned ++ == 0)
-    {
-      einfo (VERBOSE, "%s: WARN: Could not find separate debug file: %s", data->full_filename, link);
-#ifndef LIBANNOCHECK
-#if HAVE_LIBDEBUGINFOD
-      if (! use_debuginfod)
-	einfo (VERBOSE, "%s: info: Possibly rerun annocheck with --use-debuginfod ?", data->full_filename);
-#endif
-#endif
-    }
-
+ return_fail:
+  free (debugfile);
   free (build_id_name);
   free (canon_dir);
-  free (debugfile);
+
+  * filename_return = (char *) link;
   return false;
 
- found:
-  /* FIXME: We should verify the CRC value.  */
+ return_success:
+  * filename_return = debugfile;					\
+  * fd_return = fd;							\
+
   free (build_id_name);
   free (canon_dir);
+  return true;
+}
 
-  /* Now open the debuiginfo file.  Note the steps here are so that if the file
+bool
+annocheck_follow_debuglink (annocheck_data * data)
+{
+  if (data->filename == NULL)
+    return false;
+
+  /* Initialise the dwarf specific fields of the data structure.  */
+  if (data->dwarf_info.dwfl)
+    dwfl_end (data->dwarf_info.dwfl); /* Also closes data->dwarf_info.dwarf.  */
+  data->dwarf_info.dwarf = NULL;
+  data->dwarf_info.dwfl = NULL;
+  if (data->dwarf_info.fd != -1 && data->dwarf_info.fd != data->fd)
+    close (data->dwarf_info.fd);
+  data->dwarf_info.fd = -1;
+  data->dwarf_info.filename = NULL;
+
+  if (data->dwarf_info.warned > 1)
+    /* We have already tried twice.  Do not try any more times.  */
+    return false;
+
+  char *  debugfile = NULL;
+  int     fd;
+
+  if (! annocheck_open_separate_debuginfo_file (data, & debugfile, & fd))
+    {
+      /* Failed to find the file.  */
+      data->sep_debug_file_not_found = true;
+
+      /* Note the ++ is a sneaky trick to set dwarf_info.warned to 1 for the first
+	 failure, so that on the second attempt to locate the debuginfo files TRY_DEBUG
+	 will print the attemps in VERBOSE mode instead of VERBOSE2 mode.  Also once
+	 we have tried 2 times, there is a test at the start of this function to stop
+	 us from wasting any more time.  */
+      if (data->dwarf_info.warned ++ == 0 && debugfile != NULL)
+	{
+	  adinfo (WARN, data, "Could not find separate debug file: %s", debugfile);
+
+	  /* Look for the case where the debugfile appears to be unassociated
+	     with the original file.  Eg foo-1.x86.rpm's debugfile is bar-1.x86.debug.  */
+	  if (strstr (debugfile, data->filename) == NULL)
+	    adinfo (WARN, data, "The debug info file appears to have a name that is not associated with the original file!");
+
+	  if (BE_VERBOSE)
+	    {
+#if HAVE_LIBDEBUGINFOD && !defined LIBANNOCHECK
+	      if (! use_debuginfod)
+		adinfo (INFO, data, "hint:    Possibly rerun annocheck with --use-debuginfod ?");
+#endif
+	      if (debug_file_list == NULL && debug_dir == NULL)
+		adinfo (INFO, data, "hint:    Possibly use --debug-file or --debug-dir or --debug-rpm to supply the extra debug files ?");
+	    }
+	}
+
+      return false;
+    }
+
+  /* FIXME: We should verify the CRC value.  */
+
+  /* Now open the debuginfo file.  Note the steps here are so that if the file
      contains unresolved relocs (ie it is DT_REL) then they will be processed
      by the libdwfl library.  */
   Dwarf *       separate_debug_file = NULL;
@@ -999,7 +1243,7 @@ annocheck_follow_debuglink (annocheck_data * data)
 
   if (module == NULL)
     {
-      einfo (VERBOSE, "Unable to initialize DWARF module: %s\n", dwfl_errmsg (-1));
+      adinfo (VERBOSE, data, "Unable to initialize DWARF module: %s\n", dwfl_errmsg (-1));
       dwfl_report_end (dwfl, NULL, NULL);
     }
   else
@@ -1025,8 +1269,8 @@ annocheck_follow_debuglink (annocheck_data * data)
 	     enabled (eg libpython3.so from the python3-libs package).
 	     Let the user know about this, but do not close the file - we may still want to scan
 	     it for other information, eg annobin notes.  */
-	  einfo (VERBOSE2, "%s: Note: Separate debug file '%s' does not contain any actual debug information",
-		 data->full_filename, debugfile);
+	  adinfo (VERBOSE2, data, "Note: Separate debug file '%s' does not contain any actual debug information",
+		  debugfile);
 
 	  data->dwarf_info.fd = fd;
 	  data->dwarf_info.filename = debugfile;
@@ -1036,29 +1280,32 @@ annocheck_follow_debuglink (annocheck_data * data)
 	  data->dwarf_info.dwarf = NULL;
 	  data->dwarf_info.dwfl = NULL;
 
+	  dwfl_end (dwfl);
 	  return true;
 	}
-      
+
       if (data->dwarf_info.prev_filename == NULL || ! streq (data->dwarf_info.prev_filename, debugfile))
 	{
 	  /* Remember this file so that we do not try to load it again.  */
 	  free ((void *) data->dwarf_info.prev_filename);
 	  data->dwarf_info.prev_filename = strdup (debugfile);
 
-	  if (err)
-	    einfo (VERBOSE, "%s: warn: Failed to parse separate debug file '%s', (%s)",
-		   data->filename, debugfile, dwarf_errmsg (err));
-	  else
-	    einfo (VERBOSE, "%s: warn: Failed to parse separate debug file '%s', (no error message available)",
-		   data->filename, debugfile);
+	  adinfo (VERBOSE, data, "Failed to parse separate debug file '%s', (%s)",
+		 debugfile, dwarf_errmsg (err > 0 ? err : -1));
 	}
 
       free (debugfile);
       close (fd);
+      dwfl_end (dwfl);
       return false;
     }
 
-  einfo (VERBOSE2, "%s: Opened separate debug file: %s", data->filename, debugfile);
+  adinfo (VERBOSE2, data, "Opened separate debug file: %s", debugfile);
+
+  ssize_t       build_id_len = 0;
+  const void *  build_id_ptr = NULL;
+
+  build_id_len = dwelf_elf_gnu_build_id (data->elf, & build_id_ptr);
 
   if (build_id_len > 0)
     {
@@ -1073,32 +1320,31 @@ annocheck_follow_debuglink (annocheck_data * data)
 	{
 	  if (memcmp (build_id_ptr, separate_build_id, build_id_len))
 	    {
-	      einfo (VERBOSE, "%s: warn: separate debug info file '%s' has a different build-id",
-		     data->filename, debugfile);
+	      adinfo (VERBOSE, data, "separate debug info file '%s' has a different build-id",
+		     debugfile);
 	      ok = false;
 	    }
 	  else
-	    einfo (VERBOSE2, "%s: build-ids match", data->filename);
+	    adinfo (VERBOSE2, data, "build-ids match");
 	}
       else if (separate_build_id_len > 0)
 	{
-	  einfo (VERBOSE, "%s: warn: separate debug info file '%s' has a different length build-id",
-		 data->filename, debugfile);
+	  adinfo (VERBOSE, data, "warn: separate debug info file '%s' has a different length build-id",
+		 debugfile);
 	  ok = false;
 	}
       else
-	einfo (VERBOSE2, "%s: could not check build-ids as separate debug info file does not contain one",
-	       data->filename);
+	adinfo (VERBOSE2, data, "could not check build-ids as separate debug info file does not contain one");
 
       if (BE_VERY_VERBOSE)
 	{
-	  einfo (PARTIAL, "debug:  main build id: "); 
+	  afinfo (PARTIAL, NULL, "debug:  main build id: ");
 	  for (i = 0; i < build_id_len; i++)
-	    einfo (PARTIAL, "%02x ", ((unsigned char *) build_id_ptr)[i]);
-	  einfo (PARTIAL, "\ndebug: other build id: ");
+	    afinfo (PARTIAL, NULL, "%02x ", ((unsigned char *) build_id_ptr)[i]);
+	  afinfo (PARTIAL, NULL, "\ndebug: other build id: ");
 	  for (i = 0; i < separate_build_id_len; i++)
-	    einfo (PARTIAL, "%02x ", ((unsigned char *) separate_build_id)[i]);
-	  einfo (PARTIAL, "\n");
+	    afinfo (PARTIAL, NULL, "%02x ", ((unsigned char *) separate_build_id)[i]);
+	  afinfo (PARTIAL, NULL, "\n");
 	}
 
       if (! ok)
@@ -1109,7 +1355,7 @@ annocheck_follow_debuglink (annocheck_data * data)
 	  return false;
 	}
     }
-  
+
   data->dwarf_info.fd = fd;
   data->dwarf_info.filename = debugfile;
   data->dwarf_info.searched = false;
@@ -1136,7 +1382,7 @@ scan_dwarf (annocheck_data * data, Dwarf * dwarf, dwarf_walker func, void * ptr)
 
       if (dwarf_offdie (dwarf, cudieoff, & cudie) == NULL)
 	{
-	  einfo (ERROR, "%s: Empty CU", data->filename);
+	  adinfo (ERROR, data, "Empty CU");
 	  continue;
 	}
 
@@ -1161,7 +1407,7 @@ annocheck_walk_dwarf (annocheck_data * data, dwarf_walker func, void * ptr)
     {
       Dwfl * dwfl = dwfl_begin (&dwfl_callbacks);
       Dwfl_Module * module = dwfl_report_elf (dwfl, data->full_filename, data->full_filename, -1, 0, false);
-      
+
       if (module != NULL)
 	{
 	  Dwarf_Addr bias;
@@ -1175,14 +1421,15 @@ annocheck_walk_dwarf (annocheck_data * data, dwarf_walker func, void * ptr)
 	{
 	  data->dwarf_info.dwarf = dwarf;
 	  data->dwarf_info.dwfl = dwfl;
-	  
+
 	  data->dwarf_info.fd = data->fd;
 	  data->dwarf_info.filename = data->filename;
 	  data->dwarf_info.searched = true;
 	}
       else if (! annocheck_follow_debuglink (data))
 	{
-	  einfo (VERBOSE2, "%s: Does not contain or link to any DWARF information", data->filename);
+	  adinfo (VERBOSE2, data, "Does not contain or link to any DWARF information");
+	  dwfl_end (dwfl);
 	  return false;
 	}
     }
@@ -1235,7 +1482,7 @@ annocheck_find_symbol_by_name (annocheck_data * data, const char * name,
 
       if ((sym_data = elf_getdata (sym_sec, NULL)) == NULL)
 	{
-	  einfo (VERBOSE2, "Unable to load symbol section");
+	  adinfo (VERBOSE2, data, "Unable to load symbol section");
 	  /* FIXME: Warn ??  */
 	  continue;
 	}
@@ -1269,7 +1516,13 @@ typedef struct find_symbol_return
 } find_symbol_return;
 
 static bool
-find_symbol_in (Elf * elf, Elf_Scn * sym_sec, ulong start, ulong end, Elf64_Shdr * sym_hdr, bool prefer_func, find_symbol_return * data_return)
+find_symbol_in (Elf *                 elf,
+		Elf_Scn *             sym_sec,
+		ulong                 start,
+		ulong                 end,
+		Elf64_Shdr *          sym_hdr,
+		bool                  prefer_func,
+		find_symbol_return *  data_return)
 {
   Elf_Data * sym_data;
 
@@ -1281,7 +1534,7 @@ find_symbol_in (Elf * elf, Elf_Scn * sym_sec, ulong start, ulong end, Elf64_Shdr
 
   if ((sym_data = elf_getdata (sym_sec, NULL)) == NULL)
     {
-      einfo (VERBOSE2, "No symbol section data");
+      afinfo (VERBOSE2, NULL, "No symbol section data in ELF file");
       return false;
     }
 
@@ -1381,7 +1634,7 @@ find_symbol_in (Elf * elf, Elf_Scn * sym_sec, ulong start, ulong end, Elf64_Shdr
       data_return->name = before_start.name;
       data_return->type = before_start.type;
       data_return->distance = before_start.distance;
-      return true;      
+      return true;
     }
 
   return false;
@@ -1439,7 +1692,7 @@ find_symbol_addr_using_dwarf (annocheck_data * data, Dwarf * dwarf, Dwarf_Die * 
   if (dwarf_getsrclines (die, & lines, & nlines) != 0)
     {
       /* FIXME: We could report dwarf_errmsg() here.  */
-      einfo (VERBOSE2, "Unable to retrieve a DWARF line table");
+      adinfo (VERBOSE2, data, "Unable to retrieve a DWARF line table");
       return false;
     }
 
@@ -1450,7 +1703,7 @@ find_symbol_addr_using_dwarf (annocheck_data * data, Dwarf * dwarf, Dwarf_Die * 
       ulong        best_distance_so_far = ULONG_MAX;
       const char * best_name = NULL;
 
-      einfo (VERBOSE2, "Scanning %lu lines in the DWARF line table", (unsigned long) nlines);
+      adinfo (VERBOSE2, data, "Scanning %lu lines in the DWARF line table", (unsigned long) nlines);
       while ((line = dwarf_onesrcline (lines, indx)) != NULL)
 	{
 	  Dwarf_Addr addr;
@@ -1532,7 +1785,7 @@ annocheck_get_symbol_name_and_type (annocheck_data *     data,
   previous_start = start;
   previous_end   = end;
 
-  einfo (VERBOSE2, "Look for a symbol matching address %#lx..%#lx", start, end);
+  adinfo (VERBOSE2, data, "Look for a symbol matching address %#lx..%#lx", start, end);
 
   find_symbol_return data_return;
   memset (& data_return, 0, sizeof data_return);
@@ -1634,7 +1887,7 @@ process_ar (const char * filename, int fd, Elf * elf)
 
       if (elf_end (subelf))
 	{
-	  einfo (FAIL, "unable to close archive member %s", fname);
+	  afinfo (FAIL, filename, "unable to close archive member %s", fname);
 	  free ((char *) fname);
 	  return false;
 	}
@@ -1656,20 +1909,20 @@ process_elf (const char * filename, int fd, Elf * elf)
     }
 
   /* Try reading the file's magic number.  */
-  char buf[4];
+  unsigned   char buf[4];
 
   lseek (fd, 0, SEEK_SET);
   /* Check for known magic values.  */
   if (read (fd, buf, 4) == 4)
     {
-      const char llvm_magic[4] = { 0x42, 0x43, 0xc0, 0xde };
-      const char rpm_magic[4]  = { 0xED, 0xAB, 0xEE, 0xDB };
+      const unsigned char llvm_magic[4] = { 0x42, 0x43, 0xc0, 0xde };
+      const unsigned char rpm_magic[4]  = { 0xED, 0xAB, 0xEE, 0xDB };
 
       if (memcmp (buf, llvm_magic, sizeof llvm_magic) == 0)
 	{
 	  if (ignore_unknown == do_ignore)
 	    return true;
-	  return einfo (WARN, "%s is an LLVM bitcode file - should it be here ?", filename);
+	  return afinfo (WARN, filename, "is an LLVM bitcode file - should it be here ?");
 	}
 
       /* FIXME: Check for ELF magic header here ?  */
@@ -1678,26 +1931,27 @@ process_elf (const char * filename, int fd, Elf * elf)
 	{
 	  if (ignore_unknown == do_ignore)
 	    return true;
-	  return einfo (WARN, "%s is not an ELF or RPM file", filename);
+	  return afinfo (WARN, filename, "is not an ELF or RPM file");
 	}
     }
   else
     {
-      if (ignore_unknown != do_ignore)
-	return einfo (WARN, "%s: unable to read magic number", filename);
-      return true;
+      if (ignore_unknown == do_ignore)
+	return true;
+
+      return afinfo (WARN, filename, "unable to read magic number");
     }
 
   /* We now know that this is an RPM.  */
   lseek (fd, 0, SEEK_SET);
 
 #ifdef LIBANNOCHECK
-  
+
   if (ignore_unknown == do_ignore)
     return true;
 
-  return einfo (WARN, "%s: is an RPM file (these are not handled by libannocheck)", filename);
-  
+  return afinfo (WARN, filename, "is an RPM file (these are not handled by libannocheck)");
+
 #else
 
   /* The rpm library leaks memory like a sieve, so we delay
@@ -1707,7 +1961,7 @@ process_elf (const char * filename, int fd, Elf * elf)
   if (! rpm_inited)
     {
       if (rpmReadConfigFiles (NULL, NULL) != 0)
-	return einfo (WARN, "Could not initialise librpm - unable to process rpm files");
+	return afinfo (WARN, NULL, "Could not initialise librpm - unable to process rpm files");
 
       rpm_inited = true;
     }
@@ -1718,7 +1972,7 @@ process_elf (const char * filename, int fd, Elf * elf)
 }
 
 bool
-process_file (const char * filename)
+annocheck_process_file (const char * filename)
 {
   struct stat  statbuf;
   int          res;
@@ -1727,11 +1981,14 @@ process_file (const char * filename)
   if (filename == NULL || * filename == 0)
     return false;
 
-  /* Fast track ignoring of debuginfo files.
+  /* Fast track ignoring of debuginfo files - unless a single tool has been specifically enabled.
      FIXME: Maybe add other file extensions ?
      FIXME: Maybe check that the extension is at the end of the filename ?  */
-  if (ignore_unknown != do_not_ignore && ends_with (filename, ".debug", 6))
-    return true;
+  if (ignore_unknown != do_not_ignore
+      && ! just_one_tool
+      && (ends_with (filename, ".debug", 6)
+	  || strstr (filename, "/.dwz/") != NULL))
+    return afinfo (VERBOSE2, filename, "skipping - it is a debug file");
 
   /* In order to avoid potential race conditions we open the file first
      and then run fstat() on it.  */
@@ -1747,15 +2004,13 @@ process_file (const char * filename)
 	  switch (ignore_links)
 	    {
 	    case ignore_not_set:
-	      if (progname != NULL)
-		return einfo (WARN, "'%s' is a symbolic link.  Run %s with -f to follow or -I to ignore", filename, progname);
-	      return einfo (WARN, "'%s' is a symbolic link", filename);
+	      return afinfo (WARN, filename, "is a symbolic link.  Use -f to follow or -I to ignore");
 
 	    case do_ignore:
 	      return true;
 
 	    case do_not_ignore:
-	      return einfo (SYS_WARN, "'%s' is a broken symbolic link", filename);
+	      return afinfo (SYS_WARN, filename, "is a broken symbolic link");
 	    }
 	}
 
@@ -1763,9 +2018,9 @@ process_file (const char * filename)
       if (ignore_unknown != do_not_ignore && errno == EACCES)
 	return false;
 
-      return einfo (SYS_WARN, "Could not open %s", filename);
+      return afinfo (SYS_WARN, filename, "Could not open");
     }
-     
+
   res = fstat (fd, & statbuf);
 
   if (res < 0)
@@ -1776,12 +2031,12 @@ process_file (const char * filename)
 	{
 	  if (lstat (filename, & statbuf) == 0
 	      && S_ISLNK (statbuf.st_mode))
-	    return einfo (WARN, "'%s': Could not follow link", filename);
+	    return afinfo (WARN, filename, "Could not follow link");
 	  else
-	    return einfo (WARN, "'%s': No such file", filename);
+	    return afinfo (WARN, filename, "No such file");
 	}
 
-      return einfo (SYS_WARN, "Could not locate '%s'", filename);
+      return afinfo (SYS_WARN, filename, "Could not locate");
     }
 
   if (S_ISDIR (statbuf.st_mode))
@@ -1789,19 +2044,19 @@ process_file (const char * filename)
       DIR * dir = fdopendir (fd);
 
       if (dir == NULL)
-	return einfo (SYS_WARN, "unable to read directory: %s", filename);
+	return afinfo (SYS_WARN, filename, "unable to read this directory");
 
       struct dirent * entry;
       bool result = true;
 
-      einfo (VERBOSE2, "Scanning directory: '%s'", filename);
+      afinfo (VERBOSE2, filename, "Scanning directory");
       while ((entry = readdir (dir)) != NULL)
 	{
 	  if (streq (entry->d_name, ".") || streq (entry->d_name, ".."))
 	    continue;
 
 	  const char * file = concat (filename, "/", entry->d_name, NULL);
-	  result &= process_file (file);
+	  result &= annocheck_process_file (file);
 	  free ((char *) file);
 	}
 
@@ -1816,32 +2071,32 @@ process_file (const char * filename)
       if (ignore_unknown == do_ignore)
 	return true;
 
-      return einfo (WARN, "'%s' is not an ordinary file", filename);
+      return afinfo (WARN, filename, "is not an ordinary file");
     }
 
   if (statbuf.st_size < 0)
     {
       close (fd);
-      return einfo (WARN, "'%s' has negative size, probably it is too large", filename);
+      return afinfo (WARN, filename, "has negative size, probably it is too large");
     }
 
   Elf * elf = elf_begin (fd, ELF_C_READ, NULL);
   if (elf == NULL)
     {
       close (fd);
-      return einfo (WARN, "Unable to open %s - maybe it is a special file ?", filename);
+      return afinfo (WARN, filename, "Unable to open - maybe it is a special file ?");
     }
 
   bool ret = process_elf (filename, fd, elf);
 
   if (elf_end (elf))
     {
-      close (fd);
-      return einfo (WARN, "Failed to close ELF file: %s", filename);
+      (void) close (fd);
+      return afinfo (WARN, filename, "Failed to close ELF library");
     }
 
   if (close (fd))
-    return einfo (SYS_WARN, "Unable to close: %s", filename);
+    return afinfo (SYS_WARN, filename, "Unable to close");
 
   return ret;
 }
@@ -1850,7 +2105,7 @@ process_file (const char * filename)
    The filename associated with FD is assumed to be FILENAME.  */
 
 bool
-annocheck_process_extra_file (checker *     checker,
+annocheck_process_extra_file (checker *     check,
 			      const char *  extra_filename,
 			      const char *  original_filename,
 			      int           fd)
@@ -1858,11 +2113,11 @@ annocheck_process_extra_file (checker *     checker,
   Elf * elf = elf_begin (fd, ELF_C_READ, NULL);
 
   if (elf == NULL)
-    return einfo (WARN, "Unable to parse extra file '%s'", extra_filename);
+    return afinfo (WARN, extra_filename, "Unable to open as an ELF file");
 
   bool ret = true;
   if (elf_kind (elf) != ELF_K_ELF)
-    return einfo (WARN, "%s: is not an ELF executable file", extra_filename);
+    return afinfo (WARN, extra_filename, "is not an ELF executable file");
 
   annocheck_data data;
 
@@ -1873,20 +2128,21 @@ annocheck_process_extra_file (checker *     checker,
   data.dwarf_info.fd = -1;
   data.elf = elf;
   data.is_32bit = gelf_getclass (elf) == ELFCLASS32;
+  data.sep_debug_file_not_found = false;
 
   /* Run the start_file callback, if defined.  */
-  if (checker->start_file)
+  if (check->start_file)
     {
-      push_component (checker);
-      checker->start_file (& data);
+      push_component (check);
+      check->start_file (& data);
       pop_component ();
     }
 
   size_t shstrndx;
 
   if (elf_getshdrstrndx (elf, & shstrndx) < 0)
-    return einfo (WARN, "%s: Unable to locate string section", extra_filename);
-	      
+    return afinfo (WARN, extra_filename, "Unable to locate string section");
+
   Elf_Scn * scn = NULL;
 
   while ((scn = elf_nextscn (elf, scn)) != NULL)
@@ -1900,37 +2156,37 @@ annocheck_process_extra_file (checker *     checker,
       if (! read_section_header (& data, scn, & sec.shdr))
 	continue;
 
-      sec.secname = elf_strptr (elf, shstrndx, sec.shdr.sh_name);	  
+      sec.secname = elf_strptr (elf, shstrndx, sec.shdr.sh_name);
 
       if (sec.secname == NULL)
 	/* Fuzzing can produce sections like this.  */
 	continue;
-      
+
+      if (check->interesting_sec == NULL)
+	continue;
+
       /* Note - do not skip empty sections, they may still be interesting to some tools.
 	 If a tool is not interested in an empty section, it can always determine this
 	 in its interesting_sec() function.  */
-      einfo (VERBOSE2, "%s: Examining section %s", extra_filename, sec.secname);
+      afinfo (VERBOSE2, extra_filename, "Examining section %s", sec.secname);
 
-      if (checker->interesting_sec == NULL)
-	continue;
-
-      push_component (checker);
-      if (checker->interesting_sec (& data, & sec))
+      push_component (check);
+      if (check->interesting_sec (& data, & sec))
 	{
-	  /* Delay loading the section contents until a checker expresses interest.  */
+	  /* Delay loading the section contents until a check expresses interest.  */
 	  if (sec.data == NULL)
 	    {
 	      sec.data = elf_getdata (scn, NULL);
 	      if (sec.data == NULL)
-		ret = einfo (ERROR, "%s: Failed to read in section %s", extra_filename, sec.secname);
+		ret = afinfo (ERROR, extra_filename, "Failed to read in section %s", sec.secname);
 	    }
 
 	  if (sec.data != NULL)
 	    {
-	      einfo (VERBOSE2, "is interested in section %s", sec.secname);
+	      einfo (VERBOSE2, "is interested in section %s - checking", sec.secname);
 
-	      assert (checker->check_sec != NULL);
-	      ret &= checker->check_sec (& data, & sec);
+	      assert (check->check_sec != NULL);
+	      ret &= check->check_sec (& data, & sec);
 	    }
 	}
       else
@@ -1958,22 +2214,22 @@ annocheck_process_extra_file (checker *     checker,
 
       seg.number = cnt;
 
-      einfo (VERBOSE2, "%s: considering segment %lu", extra_filename, (unsigned long) cnt);
-
-      if (checker->interesting_seg == NULL)
+      if (check->interesting_seg == NULL)
 	continue;
 
-      push_component (checker);
+      afinfo (VERBOSE2, extra_filename, "considering segment %lu", (unsigned long) cnt);
 
-      if (checker->interesting_seg (& data, & seg))
+      push_component (check);
+
+      if (check->interesting_seg (& data, & seg))
 	{
 	  /* Delay loading the contents of the segment until they are actually needed.  */
 	  if (seg.data == NULL)
 	    seg.data = elf_getdata_rawchunk (elf, seg.phdr->p_offset,
 					     seg.phdr->p_filesz, ELF_T_BYTE);
 
-	  assert (checker->check_seg != NULL);
-	  ret &= checker->check_seg (& data, & seg);
+	  assert (check->check_seg != NULL);
+	  ret &= check->check_seg (& data, & seg);
 	}
       else
 	einfo (VERBOSE2, "is not interested in segment %lu", (unsigned long) cnt);
@@ -1982,15 +2238,15 @@ annocheck_process_extra_file (checker *     checker,
     }
 
   /* Run the end_file callback, if defined.  */
-  if (checker->end_file)
+  if (check->end_file)
     {
-      push_component (checker);
-      checker->end_file (& data);
+      push_component (check);
+      check->end_file (& data);
       pop_component ();
     }
 
   if (elf_end (elf))
-    return einfo (WARN, "Failed to close extra file: %s", extra_filename);
+    return afinfo (WARN, extra_filename, "Failed to close");
 
   return ret;
 }
@@ -2001,9 +2257,9 @@ process_files (void)
 {
   bool result = true;
   ulong i;
-  
+
   for (i = 0; i < num_files; i++)
-    result &= process_file (files [i]);
+    result &= annocheck_process_file (files [i]);
 
   return result;
 }
@@ -2099,19 +2355,19 @@ annocheck_remove_checker (struct checker * old_checker)
 	  /* else if (old_checker->interesting_sec) ICE: not on on sec checker chain.  */
 	}
     }
-  
+
   free ((void *) old_checker->internal);
 }
 
 /* -------------------------------------------------------------------- */
 
 bool
-set_debug_file (const char * file)
+annocheck_set_debug_file (const char * file)
 {
-  if (debug_file != NULL && file != NULL)
-    einfo (WARN, "overriding previous --debug-file option (%s) with %s", debug_file, file);
-
-  debug_file = file;
+  if (file == NULL)
+    free_file_list (& debug_file_list);
+  else
+    add_file_to_list (file, & debug_file_list);
 
   return true;
 }
@@ -2132,11 +2388,11 @@ create_tmpdir (void)
      but no START_SCAN function.  */
   assert (level == 0);
 
-  strcpy (temp, "annocheck.data.XXXXXX");
+  strcpy (temp, ANNOCHECK_TMP_DATA_DIR "XXXXXX");
   tmpdir = mkdtemp (temp);
   if (tmpdir == NULL)
     {
-      einfo (ERROR, "Unable to make temporary data directory");
+      afinfo (ERROR, NULL, "Unable to make temporary data directory");
       return NULL;
     }
 
@@ -2144,19 +2400,19 @@ create_tmpdir (void)
   tmpdir = concat (cwd, "/", tmpdir, NULL);
   free ((void *) cwd);
 
-  einfo (VERBOSE2, "Created temporary directory for data transfer: %s", tmpdir);
+  afinfo (VERBOSE2, tmpdir, "Created temporary directory for data transfer");
 
   return tmpdir;
 }
 
 static void
-print_version (int level)
+print_version (int lev)
 {
-  if (level < 1)
-    einfo (INFO, "Version %d.%02d", (int) (ANNOBIN_VERSION),
+  if (lev < 1)
+    afinfo (INFO, NULL, "Version %d.%02d", (int) (ANNOBIN_VERSION),
 	   ((int) (ANNOBIN_VERSION * 100)) % 100);
 
-  if (level == 0)
+  if (lev == 0)
     return;
 
   checker * tool;
@@ -2164,7 +2420,7 @@ print_version (int level)
     if (tool->version)
       {
 	push_component (tool);
-	tool->version (level);
+	tool->version (lev);
 	pop_component ();
       }
 }
@@ -2173,10 +2429,10 @@ static void
 usage (void)
 {
   einfo (INFO, "Runs various scans on the given files");
-  einfo (INFO, "Useage: %s [options] <file(s)>", CURRENT_COMPONENT_NAME);
+  einfo (INFO, "Useage: %s [options] <file(s)>", component_names[0]);
   einfo (INFO, " Options are:");
-  einfo (INFO, "   --debug-rpm=<RPM>       [Find separate dwarf debug information in <RPM>]");
-  einfo (INFO, "   --debug-file=<FILE>     [Find separate dwarf debug information in <FILE>]");
+  einfo (INFO, "   --debug-rpm=<RPM>       [Find separate dwarf debug information in <RPM>].  Can be repeated.");
+  einfo (INFO, "   --debug-file=<FILE>     [Find separate dwarf debug information in <FILE>].  Can be repeated.");
   einfo (INFO, "   --debug-dir=<DIR>       [Look in <DIR> (and below) for separate dwarf debug information files]");
   einfo (INFO, "   -h | --help             [Display this message & exit]");
   einfo (INFO, "   -i | --ignore-unknown   [Do not complain about unknown file types]");
@@ -2223,27 +2479,14 @@ usage (void)
     }
 }
 
-static void
-save_arg (const char * arg)
-{
-  if (saved_args)
-    {
-      char * new_saved_args = concat (saved_args, " ", arg, NULL);
-      free (saved_args);
-      saved_args = new_saved_args;
-    }
-  else
-    saved_args = concat (arg, NULL);
-}
-
 #define ALLOC_FILE_DELTA 128
 
 static void
 add_file (const char * filename)
 {
   if (strstr (filename, "-debuginfo"))
-    einfo (WARN, "%s appears to be a debuginfo rpm.  Did you forget to add --debug-rpm to the command line ?",
-	   filename);
+    afinfo (WARN, filename,
+	    "appears to be a debuginfo rpm.  Did you forget to add --debug-rpm to the command line ?");
 
   if (num_files == num_allocated_files)
     {
@@ -2254,22 +2497,31 @@ add_file (const char * filename)
   files[num_files ++] = filename;
 }
 
-/* Returns zero if NAME is not a prefix for any of the names of TOOL.
-   Otherwise returns the length of the match.  */
+/* If TOOL's name is a prefix of ARG then returns the length of the prefix.
+   Otherwise returns zero.  */
 
 static unsigned int
-tool_name_match (checker * tool, const char * name)
+tool_name_match (checker * tool, const char * arg)
 {
-  unsigned int len = strlen (name);
+  unsigned int arg_len = strlen (arg);
+  unsigned int tool_len = strlen (tool->name);
 
-  if (strncasecmp (name, tool->name, len) == 0)
-    return len;
+  if (tool_len <= arg_len)
+    {
+      if (strncasecmp (arg, tool->name, tool_len) == 0)
+	return tool_len;
+    }
 
   if (tool->altname == NULL)
     return 0;
 
-  if (strcasecmp (name, tool->altname) == 0)
-    return strlen (tool->altname);
+  tool_len = strlen (tool->altname);
+
+  if (tool_len <= arg_len)
+    {
+      if (strncasecmp (arg, tool->altname, tool_len) == 0)
+	return tool_len;
+    }
 
   return 0;
 }
@@ -2284,7 +2536,8 @@ process_tool_arg (const char * arg, uint argc, const char ** argv, uint * next)
     {
       unsigned int len;
 
-      if ((len = tool_name_match (tool, arg)) != 0)
+      if (strlen (arg) > 1
+	  && (len = tool_name_match (tool, arg)) != 0)
 	{
 	  arg += len;
 
@@ -2313,6 +2566,7 @@ process_tool_arg (const char * arg, uint argc, const char ** argv, uint * next)
 			}
 		    }
 
+		  just_one_tool = true;
 		  return true;
 		}
 
@@ -2321,7 +2575,7 @@ process_tool_arg (const char * arg, uint argc, const char ** argv, uint * next)
 
 	  if (arg[0] == '-')
 	    ++arg;
-	      
+
 	  if (streq (arg, "help"))
 	    {
 	      if (tool->usage)
@@ -2362,7 +2616,73 @@ process_tool_arg (const char * arg, uint argc, const char ** argv, uint * next)
 
   return used;
 }
-  
+
+typedef enum file_option
+{
+  Debug_rpm,
+  Debug_dir,
+  Debug_file
+} file_option;
+
+static void
+save_file_arg (const char * parameter, file_option updating)
+{
+  if (parameter[0] != '/')
+    {
+      /* Convert a relative path to an absolute one so that if/when
+	 we recurse into a directory, the path will remain valid.
+	 Also handle ~ expansion.  */
+      const char * cwd;
+
+      if (parameter[0] == '~' && parameter[1] == '/')
+	{
+	  cwd = concat (getenv ("HOME"), NULL);
+	  parameter += 2;
+	}
+      else
+	cwd = getcwd (NULL, 0);
+
+      parameter = concat (cwd, "/", parameter, NULL);
+
+      free ((void *) cwd);
+    }
+  else
+    parameter = strdup (parameter);
+
+  const char * tmp = NULL;
+
+  switch (updating)
+    {
+    case Debug_rpm:
+      add_file_to_list (parameter, & debug_rpm_list);
+      break;
+
+    case Debug_dir:
+      if (debug_dir != NULL)
+	{
+	  afinfo (WARN, NULL, "overriding previous --debug-dir option (%s) with %s",
+		  debug_dir, parameter);
+	  free ((void *) debug_dir);
+	}
+      debug_dir = strdup (parameter);
+      tmp = concat ("--debug-dir=", parameter, NULL);
+      break;
+
+    case Debug_file:
+      add_file_to_list (parameter, & debug_file_list);
+      tmp = concat ("--debug-file=", parameter, NULL);
+      break;
+    }
+
+  if (tmp != NULL)
+    {
+      save_arg (tmp);
+      free ((void *) tmp);
+    }
+
+  free ((void *) parameter);
+}
+
 /* Handle command line options.
    Returns TRUE to caller if there is something to do.  */
 
@@ -2370,8 +2690,6 @@ static bool
 process_command_line (uint argc, const char * argv[])
 {
   uint a = 1;
-
-  progname = component_names[0];
 
   if (argc > 0 && argv == NULL)
     return false;
@@ -2449,14 +2767,14 @@ process_command_line (uint argc, const char * argv[])
 	  else
 	    goto unknown_arg;
 	  break;
-	      
+
 	case 'I':
 	  if (streq (arg, "I"))
 	    ignore_links = do_ignore;
 	  else
 	    goto unknown_arg;
 	  break;
-	      
+
 	case 'q': /* --quiet */
 	  if (streq (arg, "q") || streq (arg, "quiet"))
 	    {
@@ -2474,14 +2792,8 @@ process_command_line (uint argc, const char * argv[])
 	  else
 	    parameter ++;
 
-	  typedef enum option
-	    {
-	      Debug_rpm,
-	      Debug_dir,
-	      Debug_file
-	    } option;
-	  enum option updating;
-	      
+	  file_option updating;
+
 	  if (const_strneq (arg, "dwarf-dir") /* Old name for --debug-dir.  */
 	      || const_strneq (arg, "debug-dir")
 	      || const_strneq (arg, "debugdir"))
@@ -2493,71 +2805,17 @@ process_command_line (uint argc, const char * argv[])
 	  else
 	    goto unknown_arg;
 
-	  if (parameter == NULL)
+	  if (parameter == NULL || parameter[0] == 0)
 	    goto arg_missing_argument;
 
-	  if (parameter[0] != '/')
-	    {
-	      /* Convert a relative path to an absolute one so that if/when
-		 we recurse into a directory, the path will remain valid.
-		 Also handle ~ expansion.  */
-	      const char * cwd;
+	  save_file_arg (parameter, updating);
 
-	      if (parameter[0] == '~' && parameter[1] == '/')
-		{
-		  cwd = concat (getenv ("HOME"), NULL);
-		  parameter += 2;
-		}
-	      else
-		cwd = getcwd (NULL, 0);
-
-	      parameter = concat (cwd, "/", parameter, NULL);
-
-	      free ((void *) cwd);
-	    }
-	  else
-	    parameter = strdup (parameter);
-
-	  const char * tmp;
-
-	  switch (updating)
-	    {
-	    case Debug_rpm:
-	      if (debug_rpm != NULL)
-		{
-		  einfo (WARN, "overriding previous --debug-rpm option (%s) with %s",
-			 debug_rpm, parameter);
-		  free ((void *) debug_rpm);
-		}
-	      debug_rpm = parameter;
-	      tmp = concat ("--debug-rpm=", parameter, NULL);
-	      break;
-
-	    case Debug_dir:
-	      if (debug_dir != NULL)
-		{
-		  einfo (WARN, "overriding previous --debug-dir option (%s) with %s",
-			 debug_dir, parameter);
-		  free ((void *) debug_dir);
-		}
-	      debug_dir = parameter;
-	      tmp = concat ("--debug-dir=", parameter, NULL);
-	      break;
-
-	    case Debug_file:
-	      set_debug_file (parameter);
-	      tmp = concat ("--debug-file=", parameter, NULL);
-	      break;
-	    }
-
-	  save_arg (tmp);
-	  free ((void *) tmp);
-	      
-	  if (debug_dir != NULL && debug_rpm != NULL)
+	  if (debug_dir != NULL && debug_rpm_list != NULL)
 	    {
 	      static bool warned = false;
 	      if (! warned)
-		einfo (WARN, "Behaviour is undefined when both --debug-rpm and --debug-dir are specified");
+		afinfo (WARN, NULL,
+			"Behaviour is undefined when both --debug-rpm and --debug-dir are specified");
 	      warned = true;
 	    }
 	  break;
@@ -2584,7 +2842,7 @@ process_command_line (uint argc, const char * argv[])
 		}
 	      else
 		p = concat (parameter, NULL);
-	      
+
 	      prefix = p;
 	    }
 	  else
@@ -2598,7 +2856,7 @@ process_command_line (uint argc, const char * argv[])
 	      if (parameter == NULL)
 		parameter = argv[a++];
 	      else
-		parameter ++;	      
+		parameter ++;
 
 	      if (parameter == NULL)
 		goto arg_missing_argument;
@@ -2606,7 +2864,7 @@ process_command_line (uint argc, const char * argv[])
 	      level = strtoul (parameter, NULL, 0);
 	      if (level < 1)
 		{
-		  einfo (WARN, "improper --level option: %s", parameter);
+		  afinfo (WARN, NULL, "improper --level option: %s", parameter);
 		  level = 1;
 		}
 	    }
@@ -2621,25 +2879,26 @@ process_command_line (uint argc, const char * argv[])
 	      if (parameter == NULL)
 		parameter = argv[a++];
 	      else
-		parameter ++;	      
+		parameter ++;
 
 	      if (parameter == NULL)
 		goto arg_missing_argument;
 
 	      if (parameter[0] != '/')
 		{
-		  einfo (WARN, "-t/--tmpdir argument must be an absolute path, not '%s'", parameter);
+		  afinfo (WARN, NULL, "-t/--tmpdir argument must be an absolute path, not '%s'", parameter);
 		  continue;
 		}
 
 	      char * t = strdup (parameter);
+
 	      free ((void *) tmpdir);
 	      tmpdir = t;
 	    }
 	  else
 	    goto unknown_arg;
 	  break;
-	      
+
 	case 'v':
 	  if (streq (arg, "v") || streq (arg, "verbose"))
 	    {
@@ -2658,7 +2917,7 @@ process_command_line (uint argc, const char * argv[])
 	case 'V':
 	  print_version (-1);
 	  exit (EXIT_SUCCESS);
-	      
+
 	case 'u':
 #if HAVE_LIBDEBUGINFOD
 	  if (streq (arg, "u") || streq (arg, "use-debuginfod"))
@@ -2702,8 +2961,52 @@ process_command_line (uint argc, const char * argv[])
 #if HAVE_LIBDEBUGINFOD
   if (! use_debuginfod)
     /* This stops libdw from using debuginfod.  */
-    unsetenv ("DEBUGINFOD_URLS");
+    unsetenv (DEBUGINFOD_URLS_ENV_VAR);
 #endif
+
+  if (debug_rpm_list == NULL
+      && debug_file_list == NULL
+      && debug_dir == NULL
+      && num_files == 1
+      && endswith (files[0], ".rpm"))
+    {
+      /* Try to assist in the common case of running "annocheck foo-<NVR>.<ARCH>.rpm"
+	 by looking to see if there is a foo-debuginfo-<NVR>.<ARCH>.rpm file which can
+	 be used.  */
+      const char * f = files[0];
+      const char * dash;
+
+      afinfo (VERBOSE2, f, "Looking for a associated debuginfo rpm");
+      while ((dash = strchr (f, '-')) != NULL)
+	{
+	  if (isdigit (dash[1]))
+	    break;
+	  f = dash + 1;
+	}
+
+      if (dash)
+	{
+#define extension "debuginfo-"
+	  struct stat statbuf;
+	  char * test = xmalloc (strlen (files[0]) + strlen (extension) + 1);
+
+	  sprintf (test, "%.*s%s%s", (int) (dash - files[0]) + 1, files[0], extension, dash+1);
+
+	  afinfo (VERBOSE2, test, "Possible associated debuginfo rpm");
+
+	  if (stat (test, & statbuf) == 0 && S_ISREG (statbuf.st_mode))
+	    {
+	      save_file_arg (test, Debug_rpm);
+
+	      add_file_to_list (test, & debug_rpm_list);
+	    }
+
+	  free (test);
+	}
+
+      if (debug_rpm_list == NULL)
+	afinfo (VERBOSE2, NULL, "No associated debuginfo rpm found");
+    }
 
   return true;
 }
@@ -2724,7 +3027,7 @@ main (int argc, const char ** argv)
 
   if (elf_version (EV_CURRENT) == EV_NONE)
     {
-      einfo (FAIL, "Could not initialise libelf");
+      afinfo (FAIL, NULL, "Could not initialise libelf");
       return EXIT_FAILURE;
     }
 
@@ -2759,6 +3062,12 @@ main (int argc, const char ** argv)
 	tool->start_scan (level, internal->datafile);
 	pop_component ();
       }
+
+  if (debug_rpm_list != NULL && debug_dir == NULL)
+    {
+      debug_dir = extract_debug_rpm_files ();
+      annocheck_set_debug_file (NULL);
+    }
   
   bool res = process_files ();
 
@@ -2767,35 +3076,51 @@ main (int argc, const char ** argv)
       {
 	checker_internal * internal = (checker_internal *)(tool->internal);
 
-	if (internal->datafile == NULL)
+	if (internal->datafile == NULL && tool->start_scan)
 	  {
-	    einfo (ERROR, "data file should have already been created");
+	    afinfo (ERROR, NULL, "data file should have already been created");
 	    continue;
 	  }
 	push_component (tool);
 	tool->end_scan (level, internal->datafile);
 	pop_component ();
 
-	free ((char *) internal->datafile);
+	if (level == 0)
+	  {
+	    free ((char *) internal->datafile);
+	    internal->datafile = NULL;
+	  }
       }
-  
- if (debug_rpm_dir)
-   {
-     char * command = concat ("rm -fr ", debug_rpm_dir, NULL);
-     if (system (command))
-       einfo (WARN, "Failed to delete temporary directory: %s", debug_rpm_dir);
-     free (command);
-   }
+
+  if (debug_rpm_dir != NULL
+      && (debug_rpm_dir != debug_dir || const_strneq (debug_dir, ANNOCHECK_TMP_DEBUGINFO_DIR)))
+    {
+      char * command = concat ("rm -fr ", debug_rpm_dir, NULL);
+      if (system (command))
+	afinfo (WARN, debug_rpm_dir, "Failed to delete temporary directory");
+      free (command);
+    }
 
   if (self_made_tmpdir)
     {
       assert (level == 0);
       assert (tmpdir != NULL);
-      rmdir (tmpdir);
+      if (rmdir (tmpdir) == -1)
+	{
+	  afinfo (WARN, tmpdir, "Unable to delete data passing directory");
+	  if (errno == ENOTEMPTY)
+	    afinfo (WARN, tmpdir, "Directory is not empty");
+	}
     }
 
   free ((void *) tmpdir);
   free ((void *) files);
+  free ((void *) debug_dir);
+
+#ifndef LIBANNOCHECK
+  free_file_list (& debug_rpm_list);
+#endif
+  free_file_list (& debug_file_list);
 
   return res ? EXIT_SUCCESS : EXIT_FAILURE;
 }

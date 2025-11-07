@@ -1,5 +1,5 @@
 /* annobin - a gcc plugin for annotating binary files.
-   Copyright (c) 2017 - 2024 Red Hat.
+   Copyright (c) 2017 - 2025 Red Hat.
    Created by Nick Clifton.
 
   This is free software; you can redistribute it and/or modify it
@@ -14,7 +14,6 @@
 
 #include <stdarg.h>
 #include <stdio.h>
-#include <intl.h>
 
 #include "annobin-common.h"
 #include "annobin-global.h"
@@ -36,7 +35,8 @@ struct gcc_options * annobin_global_options = & global_options;
 #define xstr(s) str(s)
 #define str(s)  #s
 static unsigned int   annobin_version = (unsigned int) (ANNOBIN_VERSION * 100);
-static const char *   version_string = "Version " xstr(ANNOBIN_VERSION);
+#define ANNOBIN_VERSION_STRING_PREFIX "Annobin Version "
+static const char *   version_string = ANNOBIN_VERSION_STRING_PREFIX xstr(ANNOBIN_VERSION);
 
 /* Prefix used to isolate annobin symbols from program symbols.  */
 #define ANNOBIN_SYMBOL_PREFIX ".annobin_"
@@ -86,7 +86,6 @@ note_type      annobin_note_format = string;
 /* Default to using section groups as the link-order
    method needs a linker from binutils 2.36 or later.  */
 attach_type    annobin_attach_type = not_set;
-
 
 /* True if this plugin is enabled.  Disabling is permitted so that build
    systems can globally enable the plugin, and then have specific build
@@ -151,7 +150,7 @@ static const char *   help_string =  "Supported options:\n\
    [no-]ppc64-nops        Do [do not] insert NOP instructions into some PPC64 sections.  (Default: do not)\n\
    [no-]stack-notes       Do [do not] create stack size notes.  (Default: do not)\n\
    note-format=[note|string]  Selects the method of recording information.  (Default: ELF format 'note's)\n\
-   rename                 Add a prefix to the filename symbols so that two annobin plugins can be active at the same time\n\
+   rename[=STR]           Add a prefix to the filename symbols so that two annobin plugins can be active at the same time\n\
    stack-threshold=N      Only create function specific stack size notes when the size is > N.";
 
 #ifdef flag_stack_clash_protection
@@ -334,7 +333,9 @@ annobin_emit_asm (const char * text, const char * comment)
   if (comment && GET_INT_OPTION_BY_INDEX (OPT_fverbose_asm))
     {
       if (len == 0)
-	;
+	{
+	  /* Empty body */
+	}
       if (len < 8)
 	fprintf (asm_out_file, "\t\t");
       else
@@ -533,13 +534,24 @@ annobin_gen_string_note (annobin_function_info *  info,
   char * dst = annobin_note_buffer;
   va_list args;
 
+  dst[0] = 0;  // Paranoia - in case 'format' does not place any characters into the string.
   va_start (args, format);
   vsprintf (dst, format, args);
   va_end (args);
 
   if (use_extended_string)
     {
-      size_t len = strlen (annobin_note_buffer) + 1 + strlen (annobin_input_filename);
+      // For some reason this is happening with RHEL-10 builds.
+      if (annobin_input_filename == NULL)
+	{
+	  if (!init_annobin_input_filename ())
+	    {
+	      ice ("annobin_gen_string_note called without an input filename\n");
+	      return;
+	    }
+	}
+	
+      size_t len = strlen (dst) + 1 + strlen (annobin_input_filename);
 
       if (! is_global (info))
 	len += strlen (get_func_name (info)) + 1;
@@ -571,8 +583,9 @@ annobin_gen_string_note (annobin_function_info *  info,
   annobin_output_string_note (dst);
 
   if (dst != annobin_note_buffer)
-    free (dst);  // FIXME: It would probably be faster to cache this
-  // pointer rather than reallocate it each time this function is called.
+    free (dst);
+  // FIXME: It would probably be faster to cache this pointer rather
+  // than reallocate it each time this function is called.
 }
 
 static void
@@ -599,7 +612,6 @@ record_short_enum_note (const bool              bool_value,
 			      bool_value ? "bool: short-enums: on" : "bool: short-enums: off",
 			      info);
 }
-
 
 void
 annobin_output_string_note (const char               string_type_char,
@@ -760,7 +772,8 @@ annobin_remap (unsigned int cl_option_index)
 	  if (j == cl_options_count)
 	    {
 	      /* The option is no longer in the array!  */
-	      annobin_inform (INFORM_VERBOSE, "option %s (index %u) not in cl_options", cl_remap[i].option_name, cl_option_index);
+	      annobin_inform (INFORM_VERBOSE, "option %s (index %u) not in cl_options",
+			      cl_remap[i].option_name, cl_option_index);
 	      cl_remap[i].checked = true;
 	      cl_remap[i].real_index = 0;
 	      return 0;
@@ -913,7 +926,7 @@ annobin_get_str_option_by_name (const char * name ATTRIBUTE_UNUSED,
   return default_return;
 }
 
-const int
+int
 annobin_get_int_option_by_name (const char * name ATTRIBUTE_UNUSED,
 				const int    default_return)
 {
@@ -1381,7 +1394,7 @@ record_cf_protection_note (annobin_function_info * info)
 #endif
 
 static void
-record_frame_pointer_note (annobin_function_info * info)
+record_frame_pointer_note (annobin_function_info * info ATTRIBUTE_UNUSED)
 {
 #if 0 /* Currently annocheck does nothing with the frame pointer note, so save space and do not generate it.  */
   int val = GET_INT_OPTION_BY_INDEX (OPT_fomit_frame_pointer);
@@ -1601,7 +1614,7 @@ annobin_emit_function_notes (bool force)
 }
 
 static const char *
-annobin_get_section_name (const_tree decl)
+annobin_get_section_name (const_tree decl ATTRIBUTE_UNUSED)
 {
 #if GCCPLUGIN_VERSION_MAJOR >= 5
   return DECL_SECTION_NAME (current_function_decl);
@@ -1665,7 +1678,8 @@ ends_with (const char * string, const char * terminator)
 /* Create any notes specific to the current function.  */
 
 static void
-annobin_create_function_notes (void * gcc_data, void * user_data)
+annobin_create_function_notes (void * gcc_data  ATTRIBUTE_UNUSED,
+			       void * user_data ATTRIBUTE_UNUSED)
 {
   unsigned int  count;
   bool          force;
@@ -2019,7 +2033,8 @@ emit_queued_attachments (void)
 }
 
 static void
-annobin_create_function_end_symbol (void * gcc_data, void * user_data)
+annobin_create_function_end_symbol (void * gcc_data  ATTRIBUTE_UNUSED,
+				    void * user_data ATTRIBUTE_UNUSED)
 {
   if (use_string_format ())
     return;
@@ -2431,10 +2446,6 @@ emit_global_notes (const char * suffix)
 static void
 annobin_active_check (const char * message)
 {
-  // FIXME - for some reason the prototype of warning() in diagnostic-core.h
-  // does not match the implementation.  So we use our own prototype here.
-  extern bool warning (int, const char *, ...);
-
   if (annobin_active_checks < 1)
     return;
 
@@ -2492,10 +2503,10 @@ annobin_record_define (const char * arg)
     }
 
   // Check for typos.
-  else if (starts_with (arg, FORTIFY_OPTION + 1))
+  else if (starts_with (arg, & FORTIFY_OPTION[1]))
     annobin_active_check ("-DFORTIFY_SOURCE found on command line, did you mean: -D_FORTIFY_SOURCE ?");
 
-  else if (starts_with (arg, GLIBCXX_OPTION + 1))
+  else if (starts_with (arg, & GLIBCXX_OPTION[1]))
     annobin_active_check ("-DGLIBCXX_ASSERTIONS found on command line, did you mean: -D_GLIBCXX_ASSERTIONS ?");
 
   else if (arg[0] == '_')
@@ -2554,7 +2565,8 @@ is_C_source_file (const char * filename)
 }
 
 static void
-annobin_create_global_notes (void * gcc_data, void * user_data)
+annobin_create_global_notes (void * gcc_data  ATTRIBUTE_UNUSED,
+			     void * user_data ATTRIBUTE_UNUSED)
 {
   if (asm_out_file == NULL)
     {
@@ -3003,7 +3015,8 @@ annobin_emit_end_symbol (const char * suffix)
 }
 
 static void
-annobin_finish_unit (void * gcc_data, void * user_data)
+annobin_finish_unit (void * gcc_data  ATTRIBUTE_UNUSED,
+		     void * user_data ATTRIBUTE_UNUSED)
 {
   if (asm_out_file == NULL)
     {
@@ -3056,6 +3069,8 @@ parse_argument (const char * key, const char * value, void * data)
 
   /* Private option used to allow building of the plugin whilst
      another version of the plugin is also active.  */
+  else if (const_strneq (key, "rename="))
+    annobin_extra_prefix = key + strlen ("rename=");
   else if (streq (key, "rename"))
     annobin_extra_prefix = ".1";
 
@@ -3167,35 +3182,165 @@ parse_args (unsigned argc, struct plugin_argument * argv)
   return result;
 }
 
+typedef struct callback_data
+{
+  unsigned int num_with_annobin_prefix;
+  unsigned int num_with_no_version;
+} callback_data;
+
+
+static void
+callback (const plugin_name_args * name_args ATTRIBUTE_UNUSED,
+	  void * user_data)
+{
+  callback_data * cbd = (callback_data *) user_data;
+
+  // From version 12.72 the annobin plugin fills in the version field with
+  // "Annobin Version NN.NN".  So look for the prefix part of the version string.
+  if (name_args != NULL
+      && name_args->version != NULL
+      && const_strneq (name_args->version, ANNOBIN_VERSION_STRING_PREFIX))
+    cbd->num_with_annobin_prefix ++;
+
+  // As a fallback look for plugins that do not fill in their version details.
+  // This is what older versions of the annobin plugin would do.
+  if (name_args != NULL && name_args->version == NULL)
+    cbd->num_with_no_version ++;
+}
+
+static bool
+multiple_annobin_plugins_present (const char * name)
+{
+  /* Note - we do not use annobin_inform (INFORM_VERBOSE, ...) here as this will be
+     the version provided by the first annobin plugin on the command line, and will
+     use that version's plugin name, input file name and verbosity level.
+
+     Note - this means that if you want to see these messages for plugin(s) that
+     are going to be disabled, you need to set their verbosity level explicitly.
+     For example:
+
+       gcc foo.c -fplugin=annobin -fplugin=another-annobin -fplugin-arg-annobin-verbose
+
+     will produce:
+
+       annobin: parsed arg verbose from command line
+       annobin: checking for multiple copies of the annobin plugin
+       annobin: only one annobin plugin has been detected
+       [...]
+       annobin: foo.c: disabling plugin another-annobin.  Use -rename option if multiple annobin plugins are needed
+
+     whereas:
+     
+       gcc foo.c -fplugin=annobin -fplugin=another-annobin -fplugin-arg-annobin-verbose -fplugin-arg-another-annobin-verbose
+
+     will produce:
+
+       annobin: parsed arg verbose from command line
+       annobin: checking for multiple copies of the annobin plugin
+       annobin: only one annobin plugin has been detected
+       [...]
+       another-annobin: checking for multiple copies of the annobin plugin
+       another-annobin: another annobin plugin has been detected
+       annobin: foo.c: disabling plugin another-annobin.  Use -rename option if multiple annobin plugins are needed  */
+
+  if (verbose_level >= INFORM_VERBOSE)
+    fprintf (stderr, "%s: checking for multiple copies of the annobin plugin\n", name);
+
+  /* The -rename option sets the annobin_extra_prefix string.
+     It is intended to allow multiple versions of the plugin to work together.  */
+  if (annobin_extra_prefix[0] != 0)
+    {
+      if (verbose_level >= INFORM_VERBOSE)
+	fprintf (stderr, "%s: check disabled: -rename has been used\n", name);
+      return false;
+    }
+
+#if GCCPLUGIN_VERSION_MAJOR > 11
+  /* We used to call plugins_active_p() here but this only lets us know if
+     there are other active plugins.  It does not tell us if they are
+     different versions of the annobin plugin.  So instead we iterate
+     over the installed plugins, examining their version information.  */
+
+  callback_data cbd = { 0, 0 };
+
+  for_each_plugin (callback, & cbd);
+
+  if (cbd.num_with_annobin_prefix > 1)
+    {
+      if (verbose_level >= INFORM_VERBOSE)
+	fprintf (stderr, "%s: %d annobin plugins detected\n", name, cbd.num_with_annobin_prefix);
+      return true;
+    }
+  else if (cbd.num_with_annobin_prefix == 0)
+    {
+      /* We should have at least seen ourselves...  */
+      ice ("unexpected result from plugin count");
+      return false;
+    }
+
+  /* We have only found one annobin plugin, which must be ourselves.
+     But there is a possibility that there are other, older versions of the
+     annobin plugin installed.  We have no reliable way of detecting them,
+     but we assume that if the version string in the plugin's
+     plugin_name_args structure is not filled in then it *might* be an
+     annobin plugin.  So we count that as a positive result.
+
+     If this turns out to be incorrect then the only recourse is for the user
+     to place the annobin plugin earlier on the gcc command line than the
+     plugin(s) that are not setting their version strings.  */
+  if (cbd.num_with_no_version > 0)
+    {
+      if (verbose_level >= INFORM_VERBOSE)
+	fprintf (stderr, "%s: %d plugin(s) found with no version info.  Assuming that they are old versions of the annobin plugin",
+		 name, cbd.num_with_no_version);
+      return true;
+    }
+#else
+  if (plugins_active_p ())
+    {
+      if (verbose_level >= INFORM_VERBOSE)
+	fprintf (stderr, "%s: other plugin(s) found.  Assuming that they are old versions of the annobin plugin",
+		 name);
+      return true;
+    }
+#endif
+  
+  return false;
+}
+
 int
 plugin_init (struct plugin_name_args *    plugin_info,
              struct plugin_gcc_version *  version)
 {
   plugin_name = plugin_info->base_name;
 
+  // Install our version string into the plugin_info structure
+  // so that it can be detected by the callback() function above.
+  plugin_info->version = version_string;
+
   // Check for arguments provided by the ANNOBIN environment variable.
   annobin_parse_env (&parse_argument, (void *) "env");
 
-  /* Parse args before checking version details so that we know if we need to be verbose.  */
+  // Parse args before checking version details so that we know if we need to be verbose.
   if (! parse_args (plugin_info->argc, plugin_info->argv))
     {
       annobin_inform (INFORM_VERBOSE, "failed to parse arguments to the plugin");
       return 1;
     }
 
-  if (plugins_active_p () && (annobin_extra_prefix[0] == 0))
+  /* The annobin plugin does work with other plugins, but not with
+     multiple copies of itself (unless the -rename option has been used).
+
+     See BZ 2162746 and RHEL-61693 for examples of why this is important.  */
+  if (multiple_annobin_plugins_present (plugin_name))
     {
-      /* See BZ 2162746 for an example of why this is needed.  */
-      /* The annobin plugin does actually work with other plugins, but not with
-	 multiple copies of itself (unless the -rename option has been used).
-	 Since we are unable to detect which other plugins have been loaded, we
-	 disable this plugin here.  If multiple versions of annobin are being run
-	 then this will disable all but the first - which is what we want.  If on
-	 the other hand a different plugin is being run, then this will only work
-	 if annobin is the first plugin to be loaded...  */
-      annobin_inform (INFORM_VERBOSE, "multiple plugins detected - disabling this annobin plugin");
+      // See multiple_annobin_plugins_present for an explanation
+      // of why we do not use annobin_inform here...
+      if (verbose_level >= INFORM_VERBOSE)
+	fprintf (stderr, "%s: disabling plugin.  Use -rename option if multiple annobin plugins are needed\n",
+		 plugin_name);
       enabled = false;
-      return 0;
+      return 0;  /* We do not return 1 as this is not an error, just a user misunderstanding.  */
     }
 
   if (! enabled)

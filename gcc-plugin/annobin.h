@@ -31,6 +31,7 @@
 
 /* These are necessary so that we can call examine the target's options.  */
 #include <plugin-version.h>
+#include <ansidecl.h>
 extern struct plugin_gcc_version gcc_version ATTRIBUTE_UNUSED;
 #include <machmode.h>
 #include <output.h>
@@ -45,9 +46,10 @@ extern struct plugin_gcc_version gcc_version ATTRIBUTE_UNUSED;
 #include "cgraph.h"
 #include "target.h"
 #if GCCPLUGIN_VERSION_MAJOR >= 5
-#include "errors.h"
-#else
+/* PR 32429: Do not use errors.h here.  That is for gcc internals only.  */
 #include "diagnostic-core.h"
+#else
+#include "diagnostic.h"
 #endif
 #if GCCPLUGIN_VERSION_MAJOR >= 12
 #include "flag-types.h"
@@ -223,7 +225,7 @@ extern int            annobin_get_int_option_by_index (unsigned int);
 
 extern struct gcc_options * annobin_global_options;
 extern const char *         annobin_get_str_option_by_name (const char *, const char *);
-extern const int            annobin_get_int_option_by_name (const char *, const int);
+extern int                  annobin_get_int_option_by_name (const char *, const int);
 
 #define GET_STR_OPTION_BY_NAME(NAME)	annobin_get_str_option_by_name (#NAME, annobin_global_options->x_##NAME)
 #define GET_INT_OPTION_BY_NAME(NAME) 	annobin_get_int_option_by_name (#NAME, annobin_global_options->x_##NAME)

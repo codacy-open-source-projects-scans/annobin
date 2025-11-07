@@ -1,5 +1,5 @@
 /* Annocheck - A tool for checking security features of binares.
-   Copyright (C) 2018-2024 Red Hat.
+   Copyright (C) 2018-2025 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published
@@ -38,7 +38,7 @@
 #include <elfutils/libdw.h>
 #include <elfutils/libdwfl.h>
 
-#include <libiberty.h>
+#include "libiberty/libiberty.h"
 
 #define PACKAGE        "annocheck"
 
@@ -68,7 +68,8 @@ typedef struct annocheck_data
   dwarf_data           dwarf_info;
   int                  fd;
   bool                 is_32bit;
-
+  bool                 sep_debug_file_not_found;
+  
 } annocheck_data;
 
 typedef struct annocheck_section
@@ -135,7 +136,7 @@ typedef struct checker
   /* Called to check a segment.
      If interesting_seg is not NULL and can return TRUE, then this field cannot be NULL.
      If FALSE is returned the check is considered to have failed.
-     the SEG->DATA field will have been initialised.  */
+     The SEG->DATA field will have been initialised.  */
   bool (* check_seg) (annocheck_data *    DATA,
 		      annocheck_segment * SEG);
 
@@ -172,17 +173,21 @@ typedef struct checker
 
   /* Called at the start of a scan of a set of input files for a given recursion depth.
      Called after PROCESS_ARG.  Called before START_FILE.
-     Can be NULL unless END_SCAN is defined.
+     Can be NULL.
      LEVEL is the recursion level for annocheck.  Level 0 is the top level.
      DATAFILE is the pathname of a file that can be used to pass data between iterations.
-     The file is unique to each checker.  The same file is used at all recursion depths.  */
+     The file is unique to each checker.  The same file is used at all recursion depths.
+     The file has NOT been created, but it can be if the start_scan function wishes to do so.  */
   void (* start_scan) (uint LEVEL, const char * DATAFILE);
 
   /* Called at the end of the scan of all of the input files at a given recursion depth.
      Can be NULL.
      LEVEL is the recursion level for annocheck.  Level 0 is the top level.
      DATAFILE is the pathname of a file that can be used to pass data between iterations.
-     The file is unique to each checker.  The same file is used at all recursion depths.  */
+     The file is unique to each checker.  The same file is used at all recursion depths.
+     If the file is created by the tool (presumably in START_SCAN) then it is the tool's
+      reponsibility to delete it.
+     DATAFILE will be NULL if there is no START_SCAN function.  */
   void (* end_scan) (uint LEVEL, const char * DATAFILE);
 
   /* Pointer to internal data used by the annocheck framework.
@@ -247,22 +252,37 @@ extern bool annocheck_find_symbol_by_name
   (annocheck_data * DATA, const char * NAME, ulong * VALUE_RETURN, uint * SECTION_RETURN);
 
 /* Runs the given CHECKER over the sections and segments in FD.
-   The filename associated with FD is assumed to be EXTRA_FILENAME.
-   the filename associated with the file that prompted the need for these extra checks is ORIGINAL_FILENAME.  */
-extern bool annocheck_process_extra_file (checker * CHECKER, const char * EXTRA_FILENAME, const char * ORIGINAL_FILENAME, int FD);
+   The filename associated with FD is assumed to be FILENAME.
+   the filename associated with the file that prompted the need for these checks is ORIGINAL_FILENAME.  */
+extern bool annocheck_process_extra_file
+  (checker * CHECKER, const char * FILENAME, const char * ORIGINAL_FILENAME, int FD);
 
 /* Attempts to follow a debug link in DATA->FILENAME.
    Initialises the DWARF data if found.  */
 extern bool annocheck_follow_debuglink (annocheck_data * DATA);
 
+/* Returns true if annocheck is using debuginfod.  */
+extern bool annocheck_debuginfod_enabled (void);
+
+/* Returns true if the indicated dwarf file has a link to a separate debug info file.  */
+extern bool annocheck_has_separate_debuginfo_link (Dwarf *);
+
+/* Attempts to open a separate debuginfo file associated with DATA.
+   If successful returns the filename in FILENAME_RETURN and the
+   opened file descriptor in FD_RETURN.  It is the caller's responsibility
+   to free the memory pointed to by FILENAME_RETURN.
+   Upon failure, returns FALSE and puts the name of the expected debug
+   info file (if any) into FILENAME_RETURN.  This string should not be
+   freed.  */
+extern bool annocheck_open_separate_debuginfo_file
+  (annocheck_data * DATA, char ** FILENAME_RETURN, int * FD_RETURN);
+
 /* Functions used by LIBANNOCHECK to access annocheck features.  */
 /* Process the specified file.  */
-extern bool process_file (const char * FILENAME);
+extern bool annocheck_process_file (const char * FILENAME);
 
 /* Set the debug file path.  */
-extern bool set_debug_file (const char * FILENAME);
-
-
+extern bool annocheck_set_debug_file (const char * FILENAME);
 
 /* An enum controlling the behaviour of the einfo function:  */
 typedef enum einfo_type
@@ -275,6 +295,7 @@ typedef enum einfo_type
   INFO,         /* Prints an informative message (on stdout).  */
   VERBOSE,      /* Like INFO but only generates the message if verbose is set.  */
   VERBOSE2,     /* Like VERBOSE but only generates the message if verbose was set twice.  */
+  PREFIXED,     /* Like INFO but also adds the prefix if one has been supplied by the -p option.  */
   PARTIAL       /* Like INFO but no EOL required.  */
 } einfo_type;
 

@@ -1,5 +1,5 @@
 /* Monitors the time annocheck takes running its tools.
-   Copyright (C) 2018-2024 Red Hat.
+   Copyright (C) 2018-2025 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published
@@ -35,7 +35,7 @@ static enum res
   } resolution = USEC;
 
 static bool
-timing_start_file (annocheck_data * data)
+timing_start_file (annocheck_data * data ATTRIBUTE_UNUSED)
 {
   if (! disabled && clock_gettime (clk_id, & start_time) != 0)
     {
@@ -49,8 +49,8 @@ timing_start_file (annocheck_data * data)
 }
 
 static bool
-timing_interesting_sec (annocheck_data *     data,
-		        annocheck_section *  sec)
+timing_interesting_sec (annocheck_data *     data ATTRIBUTE_UNUSED,
+		        annocheck_section *  sec ATTRIBUTE_UNUSED)
 {
   if (disabled || !first_sec)
     return false;
@@ -66,8 +66,8 @@ timing_interesting_sec (annocheck_data *     data,
 }
 
 static bool
-timing_interesting_seg (annocheck_data *     data,
-			annocheck_segment *  seg)
+timing_interesting_seg (annocheck_data *     data ATTRIBUTE_UNUSED,
+			annocheck_segment *  seg ATTRIBUTE_UNUSED)
 {
   if (!disabled && first_seg)
     {
@@ -134,7 +134,7 @@ timing_end_file (annocheck_data * data)
 /* This function is needed so that a data transfer file will be created.  */
 
 static void
-timing_start_scan (uint level, const char * datafile)
+timing_start_scan (uint level ATTRIBUTE_UNUSED, const char * datafile ATTRIBUTE_UNUSED)
 {
   if (disabled)
     return;
@@ -190,7 +190,7 @@ timing_end_scan (uint level, const char * datafile)
       einfo (VERBOSE2, "Storing size data in %s", datafile);
 
       /* Write the accumulated sizes into the file.  */
-      FILE * f = fopen (datafile, "w");
+      f = fopen (datafile, "w");
 
       if (f == NULL)
 	{
@@ -204,7 +204,7 @@ timing_end_scan (uint level, const char * datafile)
 }
 
 static bool
-timing_process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
+timing_process_arg (const char * arg, const char ** argv ATTRIBUTE_UNUSED, const uint argc ATTRIBUTE_UNUSED, uint * next ATTRIBUTE_UNUSED)
 {
   if (arg[0] == '-')
     ++ arg;

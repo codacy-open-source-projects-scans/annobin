@@ -45,9 +45,16 @@ run_test() {
     echo "Pass LLVM plugin test [$load_plugin_arg]"
 }
 
-if [ `echo | clang -dM -E - | grep __clang_major__ | cut -f 3 -d ' '` -gt 12 ] ;
+version=`echo | clang -dM -E - | grep __clang_major__ | cut -f 3 -d ' '`
+
+# Clang accepted -flegacy-pass-manager in versions 13 and 14.
+if [ $version -gt 12 -a $version -lt 15 ];
 then
     run_test "-flegacy-pass-manager -fplugin=$PLUGIN"
+fi
+
+if [ $version -gt 12 ];
+then
     run_test "-fpass-plugin=$PLUGIN"
 else
     run_test "-Xclang -load -Xclang $PLUGIN"

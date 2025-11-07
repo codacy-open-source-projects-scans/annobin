@@ -28,6 +28,7 @@ env = {
 if get_option('annocheck')
   env += {
     'ANNOCHECK' : annocheck.full_path(),
+    'INCDIR' : '../annocheck/',
     'LIBANNOCHECKDIR' : '../annocheck/',
   }
 
@@ -46,6 +47,9 @@ if get_option('annocheck')
   ]
 
   if have_debuginfod
+    awk = find_program('awk')
+    debuginfod = find_program('debuginfod')
+    ss = find_program('ss')
     tests += 'debuginfod'
   endif
 endif

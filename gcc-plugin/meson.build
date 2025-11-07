@@ -9,6 +9,7 @@ cdata.set_quoted('PACKAGE_TARNAME', 'annobin-plugin')
 
 headers = [
   'memory.h',
+  'limits.h',
   'stdint.h',
   'stdlib.h',
   'strings.h',
@@ -23,6 +24,7 @@ foreach header : headers
 endforeach
 
 cdata.set10('HAVE_DEBUGINFOD', have_debuginfod)
+cdata.set10('HAVE_LIBDEBUGINFOD', have_debuginfod)
 
 # Our config.h
 configure_file(output: 'config.h', configuration: cdata)
@@ -53,9 +55,26 @@ endif
 # using GCC, even if the environment wants another compiler.
 gxx = find_program('g++')
 plugin_dev_path = run_command(gxx, '-print-file-name=plugin', check: true).stdout().strip()
+
+# Use the default c++ compiler just to find if the needed dependencies are
+# installed.
+plugin_inc_path = join_paths(plugin_dev_path, 'include')
+fs = import('fs')
+if not fs.is_dir(plugin_inc_path)
+  error(
+    'Could not find ',
+    plugin_inc_path,
+    '\nAre the development files for GCC plugins installed?',
+  )
+endif
+inc = include_directories(plugin_inc_path)
+if not cxx.has_header('plugin.h', include_directories: inc)
+  error('Could not find GCC\'s plugin.h')
+endif
+
 gcc_plugin = custom_target(
   'annobin.so',
-  input: ['annobin.cc', target_plugin],
+  input: ['annobin.cc', target_plugin, '../annobin-common.cc'],
   output: 'annobin.so',
   install: true,
   install_dir : plugin_dev_path,
@@ -64,8 +83,9 @@ gcc_plugin = custom_target(
     '@INPUT@',
     '-g', '-fPIC', '-DPIC', '-shared', '-nostdlib',
     '-DHAVE_CONFIG_H',
+    '-I' + join_paths(meson.current_source_dir(), '..'),
     '-I' + join_paths(meson.current_build_dir(), '..'),
-    '-I' + join_paths(plugin_dev_path, 'include'),
+    '-I' + join_paths(plugin_inc_path),
     '-o', '@OUTPUT@',
   ]
 )

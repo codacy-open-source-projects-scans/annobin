@@ -1,5 +1,5 @@
 /* Checks the builder of the binary file. 
-   Copyright (C) 2018-2024 Red Hat.
+   Copyright (C) 2018-2025 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published
@@ -52,7 +52,7 @@ builtby_start (annocheck_data * data)
 }
 
 static bool
-builtby_interesting_sec (annocheck_data *     data,
+builtby_interesting_sec (annocheck_data *     data ATTRIBUTE_UNUSED,
 			 annocheck_section *  sec)
 {
   if (disabled)
@@ -468,11 +468,11 @@ tool_found (const char * source, const char * filename, const char * tool)
 }
 
 static bool
-builtby_note_walker (annocheck_data *     data,
+builtby_note_walker (annocheck_data *     data ATTRIBUTE_UNUSED,
 		     annocheck_section *  sec,
 		     GElf_Nhdr *          note,
 		     size_t               name_offset,
-		     size_t               data_offset,
+		     size_t               data_offset ATTRIBUTE_UNUSED,
 		     void *               ptr)
 {
   if (note->n_type != NT_GNU_BUILD_ATTRIBUTE_OPEN)
@@ -547,10 +547,10 @@ builtby_check_rodata (annocheck_data *     data,
       go_version += strlen (go_lead_in);
 
       if ((len = sscanf (go_version, "%u.%u", & version, & revision)) > 0
-	  && version != -1)
+	  && version != (unsigned int) -1)
 	{
 	  static char buf[128];
-	  if (revision != -1)
+	  if (revision != (unsigned int) -1)
 	    sprintf (buf, "Go %u.%u;", version, revision);
 	  else
 	    sprintf (buf, "Go %u;", version); 
@@ -686,7 +686,8 @@ parse_dw_at_language (annocheck_data * data, Dwarf_Attribute * attr)
       break;
       
     default:
-      einfo (WARN, "%s: unrecognised value for DW_AT_language attribute: %#lx", data->filename, val);
+      einfo (WARN, "%s: unrecognised value for DW_AT_language attribute: %#lx",
+	     data->filename, (long) val);
       break;
     }
 }
@@ -725,7 +726,7 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 /* Look for DW_AT_producer attributes.  */
 
 static bool
-builtby_dwarf_walker (annocheck_data * data, Dwarf * dwarf, Dwarf_Die * die, void * ptr)
+builtby_dwarf_walker (annocheck_data * data, Dwarf * dwarf ATTRIBUTE_UNUSED, Dwarf_Die * die, void * ptr ATTRIBUTE_UNUSED)
 {
   Dwarf_Attribute  attr;
 
@@ -811,7 +812,7 @@ add_to_strlist (strlist ** list, const char * name)
 }
 
 static bool
-builtby_process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
+builtby_process_arg (const char * arg, const char ** argv, const uint argc ATTRIBUTE_UNUSED, uint * next)
 {
   if (arg[0] == '-')
     ++ arg;
