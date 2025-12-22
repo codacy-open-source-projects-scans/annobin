@@ -2701,7 +2701,7 @@ ac_configure="$SHELL $ac_aux_dir/configure"  # Please don't use this var.
 # also update VERSION in the PROJECT section of meson.build.
 # Also note that the number after the decimal point is limited
 # to two digits due to various assumptions in the code.
-ANNOBIN_VERSION=13.03
+ANNOBIN_VERSION=13.04
 
 
 # Make sure we can run config.sub.

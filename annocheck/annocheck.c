@@ -1097,7 +1097,7 @@ annocheck_open_separate_debuginfo_file (annocheck_data * data, char ** filename_
        vs ld-2.29.1-22.fc28.debug_info.
      So check for earlier versions of the debuginfo file in the directory
      where it is known that Fedora stores its debug files...  */
-  char * dash = strrchr (link, '-');
+  const char * dash = strrchr (link, '-');
   if (dash)
     {
       char * end;

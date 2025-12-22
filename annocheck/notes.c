@@ -706,7 +706,7 @@ check_annobin_string_section (annocheck_data *    data,
 		/* For certain strings, if a name follows the note, it is
 		   the filename (and optionally the function name) of
 		   the non-conforming file.  */
-		char * space = strchr (ptr, ' ');
+		const char * space = strchr (ptr, ' ');
 
 		if (space != NULL)
 		  {

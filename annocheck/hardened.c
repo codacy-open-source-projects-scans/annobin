@@ -7281,7 +7281,7 @@ check_annobin_string_section (annocheck_data *    data,
 	    && annobin_string_checkers[i].letters[1] == second_letter)
 	  {
 	    /* If a name follows a string note, it is the filename for the note.  */
-	    char * space = strchr (ptr, ' ');
+	    const char * space = strchr (ptr, ' ');
 
 	    if (space != NULL)
 	      {

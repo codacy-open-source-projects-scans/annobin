@@ -344,7 +344,7 @@ parse_tool (const char *   filename,
 
   * program_return = tool;
   
-  char * space = strchr (tool, ' ');
+  const char * space = strchr (tool, ' ');
   if (space)
     {
       * proglen_return = space - tool;
