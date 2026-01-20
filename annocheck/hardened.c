@@ -4516,8 +4516,8 @@ static const struct profiles
 		      { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS },
 		      { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS, TEST_OPENSSL_ENGINE } },
 
-  [ PROFILE_RAWHIDE ] = { { "rawhide", "f43", "f42" },
-			  { ".fc43", ".fc42" },
+  [ PROFILE_RAWHIDE ] = { { "rawhide", "f44", "f43", "f42" },
+			  { ".fc44", ".fc43", ".fc42" },
 			  { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS, TEST_FIPS, TEST_OPENSSL_ENGINE },
 			  { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS } },
 
