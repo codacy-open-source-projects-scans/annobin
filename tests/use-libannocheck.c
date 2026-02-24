@@ -1,5 +1,5 @@
 /* use-libannocheck.c - Test the libannocheck library.
-   Copyright (c) 2021-2024 Red Hat.
+   Copyright (c) 2021-2026 Red Hat.
    Created by Nick Clifton.
 
   This is free software; you can redistribute it and/or modify it

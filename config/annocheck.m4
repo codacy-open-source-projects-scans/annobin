@@ -1,6 +1,6 @@
 dnl file      : config/annocheck.m4
 dnl copyright : Copyright (c) 2020 Theobroma Systems Design und Consulting GmbH
-dnl copyright : Copyright (c) 2021-2024 Red Hat
+dnl copyright : Copyright (c) 2021-2026 Red Hat
 dnl license   : MIT; see accompanying LICENSE file
 dnl
 dnl ANNOCHECK

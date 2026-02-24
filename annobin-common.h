@@ -1,5 +1,5 @@
 /* annobin - Common functions used by plugins.
-   Copyright (c) 2024 Red Hat.
+   Copyright (c) 2024 - 2026 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published

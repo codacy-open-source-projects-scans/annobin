@@ -3,7 +3,7 @@
 # Script to check for hardening options in annotated binaries
 #
 # Created by Nick Clifton.  <nickc@redhat.com>
-# Copyright (c) 2017-2024 Red Hat.
+# Copyright (c) 2017-2026 Red Hat.
 #
 # This is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published

@@ -1,5 +1,5 @@
 /* Displays the Annobin notes in binary files.
-   Copyright (C) 2019-2025 Red Hat.
+   Copyright (C) 2019-2026 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published

@@ -1,5 +1,5 @@
 /* annobin - a gcc plugin for annotating binary files.
-   Copyright (c) 2017 - 2025 Red Hat.
+   Copyright (c) 2017 - 2026 Red Hat.
    Created by Nick Clifton.
 
   This is free software; you can redistribute it and/or modify it

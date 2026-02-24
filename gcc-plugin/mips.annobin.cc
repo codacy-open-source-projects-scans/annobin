@@ -1,5 +1,5 @@
 /* mips.annobin - Empty target specific parts of the annobin plugin.
-   Copyright (c) 2024 Red Hat.
+   Copyright (c) 2024 - 2026 Red Hat.
    Created by Nick Clifton.
 
   This is free software; you can redistribute it and/or modify it

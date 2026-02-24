@@ -1,5 +1,5 @@
 /* Checks the builder of the binary file. 
-   Copyright (C) 2018-2025 Red Hat.
+   Copyright (C) 2018-2026 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published

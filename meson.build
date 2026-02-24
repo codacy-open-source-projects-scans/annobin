@@ -1,5 +1,5 @@
 # file      : meson.build
-# copyright : Copyright (c) 2017-2025 Red Hat
+# copyright : Copyright (c) 2017-2026 Red Hat
 # license   : GNU GPL v3 or later; see accompanying LICENSE file
 
 # NB/ When updating the VERSION below, remember to also
@@ -7,7 +7,7 @@
 project(
   'annobin',
   ['c', 'cpp'],
-  version: '13.05',
+  version: '13.06',
   meson_version: '>=0.59'
 )
 

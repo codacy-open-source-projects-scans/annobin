@@ -1,9 +1,9 @@
-This is annobin.info, produced by makeinfo version 7.1.1 from
+This is annobin.info, produced by makeinfo version 7.2 from
 annobin.texi.
 
 This file documents the annobin plugin on the Fedora system.
 
-   Copyright © 2018 - 2024 Red Hat.
+   Copyright © 2018-2026 Red Hat.
 
    Permission is granted to copy, distribute and/or modify this document
 under the terms of the GNU Free Documentation License, Version 1.3 or
@@ -27,7 +27,7 @@ This manual describes the ANNOBIN plugin and the ‘annocheck’ program,
 and how you can use them to determine what security features were used
 when a program was built.
 
-   This manual is for ‘annobin’ (Annobin) version 12.0.
+   This manual is for ‘annobin’ (Annobin) version 13.0.
 
    This document is distributed under the terms of the GNU Free
 Documentation License version 1.3.  A copy of the license is included in
@@ -4523,94 +4523,93 @@ recommend releasing these examples in parallel under your choice of free
 software license, such as the GNU General Public License, to permit
 their use in free software.
 
-
 
 Tag Table:
-Node: Top706
-Node: Introduction1852
-Node: Plugins4206
-Node: Examining15342
-Node: The Version Encoding18716
-Node: The STACK Encoding20013
-Node: The PIC Encoding20655
-Node: The GOW Encoding21343
-Node: The CF Encoding26923
-Node: The ENUM Encoding28035
-Node: The INSTRUMENT Encoding28444
-Node: String Format Notes29691
-Node: Annocheck31776
-Node: Built By37146
-Node: Hardened41738
-Node: The tests43929
-Node: Test auto var init46439
-Node: Test bind now47744
-Node: Test branch protection49440
-Node: Test cf protection52989
-Node: Test dynamic segment57352
-Node: Test dynamic tags58496
-Node: Test entry62208
-Node: Test fast63106
-Node: Test fips64149
-Node: Test flex arrays65183
-Node: Test fortify66284
-Node: Test gaps68185
-Node: Test glibcxx assertions68954
-Node: Test gnu relro70008
-Node: Test gnu stack71761
-Node: Test go revision74171
-Node: Test implicit values75232
-Node: Test instrumentation76614
-Node: Test load segments77491
-Node: Test lto79190
-Node: Test not branch protection80306
-Node: Test not dynamic tags82210
-Node: Test notes84220
-Node: Test only go86883
-Node: Test OpenSSL Engine88049
-Node: Test optimization89145
-Node: Test pic90564
-Node: Test pie92138
-Node: Test production93447
-Node: Test property note94287
-Node: Test rhivos96775
-Node: Test run path99399
-Node: Test rwx seg101638
-Node: Test short enums101984
-Node: Test stack clash103026
-Node: Test stack prot104512
-Node: Test stack realign105865
-Node: Test textrel107155
-Node: Test threads108464
-Node: Test unicode109296
-Node: Test warnings110832
-Node: Test writable got111688
-Node: Test zero call used regs112986
-Node: Hardened Command Line Options114272
-Node: Waiving Hardened Results123187
-Node: Absence of compiled code125209
-Node: Notes132213
-Node: Size132859
-Node: Timing135577
-Node: Libannocheck136236
-Node: libannocheck_init138191
-Node: libannocheck_finish139113
-Node: libannocheck_get_version139661
-Node: libannocheck_get_error_message140074
-Node: libannocheck_get_known_tests140714
-Node: libannocheck_enable_all_tests141892
-Node: libannocheck_disable_all_tests142375
-Node: libannocheck_enable_test142935
-Node: libannocheck_disable_test143615
-Node: libannocheck_enable_profile144296
-Node: libannocheck_get_known_profiles144818
-Node: libannocheck_run_tests145521
-Node: Configure Options146370
-Node: Legacy Scripts149115
-Node: Who Built Me149898
-Node: ABI Checking152789
-Node: Hardening Checks155036
-Node: Checking Archives159384
-Node: GNU FDL161935
+Node: Top702
+Node: Introduction1848
+Node: Plugins4202
+Node: Examining15338
+Node: The Version Encoding18712
+Node: The STACK Encoding20009
+Node: The PIC Encoding20651
+Node: The GOW Encoding21339
+Node: The CF Encoding26919
+Node: The ENUM Encoding28031
+Node: The INSTRUMENT Encoding28440
+Node: String Format Notes29687
+Node: Annocheck31772
+Node: Built By37142
+Node: Hardened41734
+Node: The tests43925
+Node: Test auto var init46435
+Node: Test bind now47740
+Node: Test branch protection49436
+Node: Test cf protection52985
+Node: Test dynamic segment57348
+Node: Test dynamic tags58492
+Node: Test entry62204
+Node: Test fast63102
+Node: Test fips64145
+Node: Test flex arrays65179
+Node: Test fortify66280
+Node: Test gaps68181
+Node: Test glibcxx assertions68950
+Node: Test gnu relro70004
+Node: Test gnu stack71757
+Node: Test go revision74167
+Node: Test implicit values75228
+Node: Test instrumentation76610
+Node: Test load segments77487
+Node: Test lto79186
+Node: Test not branch protection80302
+Node: Test not dynamic tags82206
+Node: Test notes84216
+Node: Test only go86879
+Node: Test OpenSSL Engine88045
+Node: Test optimization89141
+Node: Test pic90560
+Node: Test pie92134
+Node: Test production93443
+Node: Test property note94283
+Node: Test rhivos96771
+Node: Test run path99395
+Node: Test rwx seg101634
+Node: Test short enums101980
+Node: Test stack clash103022
+Node: Test stack prot104508
+Node: Test stack realign105861
+Node: Test textrel107151
+Node: Test threads108460
+Node: Test unicode109292
+Node: Test warnings110828
+Node: Test writable got111684
+Node: Test zero call used regs112982
+Node: Hardened Command Line Options114268
+Node: Waiving Hardened Results123183
+Node: Absence of compiled code125205
+Node: Notes132209
+Node: Size132855
+Node: Timing135573
+Node: Libannocheck136232
+Node: libannocheck_init138187
+Node: libannocheck_finish139109
+Node: libannocheck_get_version139657
+Node: libannocheck_get_error_message140070
+Node: libannocheck_get_known_tests140710
+Node: libannocheck_enable_all_tests141888
+Node: libannocheck_disable_all_tests142371
+Node: libannocheck_enable_test142931
+Node: libannocheck_disable_test143611
+Node: libannocheck_enable_profile144292
+Node: libannocheck_get_known_profiles144814
+Node: libannocheck_run_tests145517
+Node: Configure Options146366
+Node: Legacy Scripts149111
+Node: Who Built Me149894
+Node: ABI Checking152785
+Node: Hardening Checks155032
+Node: Checking Archives159380
+Node: GNU FDL161931
 
 End Tag Table
 

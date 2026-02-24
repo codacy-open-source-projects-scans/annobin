@@ -1,5 +1,5 @@
 # file      : configure.ac
-# copyright : Copyright (c) 2017-2025 Red Hat
+# copyright : Copyright (c) 2017-2026 Red Hat
 # license   : GNU GPL v3 or later; see accompanying LICENSE file
 
 AC_PREREQ(2.64)
@@ -12,7 +12,7 @@ AC_CONFIG_SRCDIR([annobin-global.h.in])
 # also update VERSION in the PROJECT section of meson.build.
 # Also note that the number after the decimal point is limited
 # to two digits due to various assumptions in the code.
-ANNOBIN_VERSION=13.05
+ANNOBIN_VERSION=13.06
 AC_SUBST(ANNOBIN_VERSION)
 
 AC_CANONICAL_SYSTEM

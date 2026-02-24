@@ -1,5 +1,5 @@
 /* Checks the hardened status of the given file.
-   Copyright (C) 2018-2025 Red Hat.
+   Copyright (C) 2018-2026 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
   under the terms of the GNU General Public License as published
@@ -4119,9 +4119,11 @@ is_gcc_component (annocheck_data * data)
       "libgfortran.so.5.0.0",
       "libgomp.so.1",
       "libgomp.so.1.0.0",
+      "libhwasan.so.0",
       "libhwasan.so.0.0.0",
       "libhwasan_preinit.o",
       "liblsan_preinit.o",
+      "libtsan.so.2",
       "libtsan.so.2.0.0",
       "libtsan_preinit.o"
     };

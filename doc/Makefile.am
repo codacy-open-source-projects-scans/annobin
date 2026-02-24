@@ -1,4 +1,4 @@
-## copyright : Copyright (C) 2017-2024 Red Hat.
+## copyright : Copyright (C) 2017-2026 Red Hat.
 ## license   : GNU GPL v3; see accompanying LICENSE file
 
 ## You should have received a copy of the GNU General Public License

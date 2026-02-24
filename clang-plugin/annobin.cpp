@@ -1,5 +1,5 @@
 /* annobin - a clang plugin for annotating the output binary file.
-   Copyright (C) 2019-2024 Red Hat.
+   Copyright (C) 2019-2026 Red Hat.
    Created by Nick Clifton and Serge Guelton.
 
   This is free software; you can redistribute it and/or modify it

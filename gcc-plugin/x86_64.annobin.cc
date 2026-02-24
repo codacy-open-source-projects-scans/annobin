@@ -1,5 +1,5 @@
 /* x86_64.annobin - x86_64 specific parts of the annobin plugin.
-   Copyright (c) 2017 - 2024 Red Hat.
+   Copyright (c) 2017 - 2026 Red Hat.
    Created by Nick Clifton.
 
   This is free software; you can redistribute it and/or modify it

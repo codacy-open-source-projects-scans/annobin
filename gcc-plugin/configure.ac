@@ -1,5 +1,5 @@
 # file      : configure.ac
-# copyright : Copyright (c) 2017-2024 Red Hat
+# copyright : Copyright (c) 2017-2026 Red Hat
 # license   : GNU GPL v3 or later; see accompanying LICENSE file
 
 AC_PREREQ(2.64)

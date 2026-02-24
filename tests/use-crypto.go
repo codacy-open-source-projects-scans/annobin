@@ -1,4 +1,4 @@
-// copyright : Copyright (c) 2023-2024 Red Hat
+// copyright : Copyright (c) 2023-2026 Red Hat
 // license   : GNU GFDL v1.3; see accompanying LICENSE file.
 
 // The following is a minimal TLS server which, once compiled,

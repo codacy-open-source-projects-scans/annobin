@@ -1,4 +1,4 @@
-# copyright : Copyright (C) 2017-2024 Red Hat.
+# copyright : Copyright (C) 2017-2026 Red Hat.
 # license   : GNU GPL v3; see accompanying LICENSE file.
 
 # No shared_module here either, we need to force clang.
