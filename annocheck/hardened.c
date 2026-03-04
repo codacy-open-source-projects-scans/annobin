@@ -32,12 +32,16 @@
 #ifndef EM_BPF
 #define EM_BPF		247	/* Linux BPF -- in-kernel virtual machine.  */
 #endif
+#ifndef SHT_AARCH64_ATTRIBUTES
+#define SHT_AARCH64_ATTRIBUTES (SHT_LOPROC + 3)
+#endif
 
 #define HARDENED_CHECKER_NAME   "Hardened"
 
 /* Predefined names for all of the sources of information scanned by this checker.  */
 #define SOURCE_ANNOBIN_NOTES    "annobin notes"
 #define SOURCE_ANNOBIN_STRING_NOTES ANNOBIN_STRING_SECTION_NAME
+#define SOURCE_ARM_ATTRIBUTES   ".ARM.attributes section"
 #define SOURCE_COMMENT_SECTION  ".comment section"
 #define SOURCE_DW_AT_LANGUAGE   "DW_AT_language string"
 #define SOURCE_DW_AT_PRODUCER   "DW_AT_producer string"
@@ -213,7 +217,7 @@ static struct per_file
   bool         branch_protection_pending_pass;
   bool         build_notes_seen;
   bool         build_string_notes_seen;
-  bool         debuginfo_file;
+  bool         is_debuginfo_file;
   bool         fast_note_seen;
   bool         fast_note_setting;
   bool         gaps_seen;
@@ -278,7 +282,7 @@ static unsigned char entry_bytes[4];
 
 enum test_state
 {
-  STATE_UNTESTED = 0,
+  STATE_UNTESTED = 0,   /* Possibly this ought to be STATE_UNDETERMINED.  */
   STATE_PASSED,
   STATE_FAILED,
   STATE_SKIPPED,
@@ -703,6 +707,12 @@ untested (enum test_index check)
   return (t->state == STATE_UNTESTED);
 }
 
+static bool
+already_passed (enum test_index testnum)
+{
+  return tests[testnum].state == STATE_PASSED;
+}
+
 static void
 pass (annocheck_data *  data ATTRIBUTE_UNUSED,
       enum test_index   testnum,
@@ -714,18 +724,28 @@ pass (annocheck_data *  data ATTRIBUTE_UNUSED,
   if (! test_enabled (testnum))
     return;
 
+  test * t = tests + testnum;
+
   /* If we have already seen a FAIL then do not also report a PASS.  */
-  if (tests[testnum].state == STATE_FAILED)
-    return;
+  if (t->state == STATE_FAILED)
+    {
+      einfo (VERBOSE2, "Ignoring PASS of %s because it has already FAILed\n", t->name);
+      return;
+    }
 
   // If we have already passed this test then do not pass it again.
-  if (tests[testnum].result_announced)
-    return;
+  if (t->result_announced)
+    {
+      einfo (VERBOSE2, "Test %s also PASSing because of %s\n", t->name, reason);
+      return;
+    }
 
-  if (tests[testnum].state == STATE_UNTESTED)
-    tests[testnum].state = STATE_PASSED;
-
-  per_file.num_pass ++;
+  // Do not change a MAYBE into a PASS either.
+  if (untested (testnum))
+    {
+      t->state = STATE_PASSED;
+      per_file.num_pass ++;
+    }
 
   if (skip_passes)
     return;
@@ -741,7 +761,7 @@ pass (annocheck_data *  data ATTRIBUTE_UNUSED,
     {
       const char * fname = sanitize_filename (filename);
 
-      einfo (INFO, FIXED_FORMAT_STRING, "PASS", tests[testnum].name, fname);
+      einfo (INFO, FIXED_FORMAT_STRING, "PASS", t->name, fname);
       if (fname != filename)
 	free ((void *) fname);
     }
@@ -751,7 +771,7 @@ pass (annocheck_data *  data ATTRIBUTE_UNUSED,
 	return;
 
       einfo (PARTIAL, "%s: %s: ", HARDENED_CHECKER_NAME, filename);
-      einfo (PARTIAL, "PASS: %s test ", tests[testnum].name);
+      einfo (PARTIAL, "PASS: %s test ", t->name);
       if (reason)
 	einfo (PARTIAL, "because %s ", reason);
       if (BE_VERY_VERBOSE)
@@ -3515,6 +3535,10 @@ fail (annocheck_data * data,
 
   test * t = tests + testnum;
 
+  if (already_passed (testnum))
+    /* This does happen, so do not panic.  */
+    einfo (VERBOSE2, "Changing test %s from PASS to FAIL\n", t->name);
+  
 #ifdef LIBANNOCHECK
   libannocheck_record_test_fail (testnum, source, reason);
 #else
@@ -3523,6 +3547,7 @@ fail (annocheck_data * data,
   if (fixed_format_messages)
     {
       const char * fname = sanitize_filename (filename);
+
       einfo (INFO, FIXED_FORMAT_STRING, "FAIL", t->name, fname);
       if (fname != filename)
 	free ((void *) fname);
@@ -4519,7 +4544,7 @@ static const struct profiles
 		      { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS, TEST_OPENSSL_ENGINE } },
 
   [ PROFILE_RAWHIDE ] = { { "rawhide", "f44", "f43", "f42" },
-			  { ".fc44", ".fc43", ".fc42" },
+			  { ".fc45", ".fc44", ".fc43", ".fc42" },
 			  { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS, TEST_FIPS, TEST_OPENSSL_ENGINE },
 			  { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS } },
 
@@ -4767,14 +4792,14 @@ interesting_sec (annocheck_data *     data,
 
   /* .dwz files have a .gdb_index section.  */
   if (streq (sec->secname, ".gdb_index"))
-    per_file.debuginfo_file = true;
+    per_file.is_debuginfo_file = true;
 
   if (streq (sec->secname, ".text"))
     {
       /* Separate debuginfo files have a .text section with a non-zero
 	 size but no contents!  */
       if (sec->shdr.sh_type == SHT_NOBITS && sec->shdr.sh_size > 0)
-	per_file.debuginfo_file = true;
+	per_file.is_debuginfo_file = true;
 
       per_file.text_section_name_index  = sec->shdr.sh_name;
       per_file.text_section_alignment   = sec->shdr.sh_addralign;
@@ -4789,7 +4814,10 @@ interesting_sec (annocheck_data *     data,
        || sec->shdr.sh_type == SHT_DYNSYM))
     return true;
 
-  if (per_file.debuginfo_file)
+  if (sec->shdr.sh_type == SHT_AARCH64_ATTRIBUTES)
+    return true;
+
+  if (per_file.is_debuginfo_file)
     return false;
 
   /* If the file has a stack section then check its permissions.  */
@@ -4799,7 +4827,7 @@ interesting_sec (annocheck_data *     data,
 	fail (data, TEST_GNU_STACK, SOURCE_SECTION_HEADERS, "the .stack section is executable");
       if ((sec->shdr.sh_flags & SHF_WRITE ) != SHF_WRITE)
 	fail (data, TEST_GNU_STACK, SOURCE_SECTION_HEADERS, "the .stack section is not writeable");
-      else if (tests[TEST_GNU_STACK].state == STATE_PASSED)
+      else if (already_passed (TEST_GNU_STACK))
 	maybe (data, TEST_GNU_STACK, SOURCE_SECTION_HEADERS, "multiple stack sections detected");
       else
 	pass (data, TEST_GNU_STACK, SOURCE_SECTION_HEADERS, ".stack section exists and has correction permissions");
@@ -4821,7 +4849,7 @@ interesting_sec (annocheck_data *     data,
 	    fail (data, TEST_WRITABLE_GOT, SOURCE_SECTION_HEADERS, "the GOT/PLT relocs are writable");
 	}
       else
-	pass (data, TEST_WRITABLE_GOT, SOURCE_SECTION_HEADERS, NULL);
+	pass (data, TEST_WRITABLE_GOT, SOURCE_SECTION_HEADERS, "section headers look good");
 	
       return false;
     }
@@ -4880,13 +4908,22 @@ interesting_sec (annocheck_data *     data,
 }
 
 static bool
-interesting_note_sec (annocheck_data *     data ATTRIBUTE_UNUSED,
-		      annocheck_section *  sec)
+interesting_debuginfo_sec (annocheck_data *     data ATTRIBUTE_UNUSED,
+			   annocheck_section *  sec)
 {
   if (disabled)
     return false;
 
-  return sec->shdr.sh_type == SHT_NOTE || sec->shdr.sh_type == SHT_STRTAB || sec->shdr.sh_type == SHT_PROGBITS;
+  switch (sec->shdr.sh_type)
+    {
+    case SHT_AARCH64_ATTRIBUTES:
+    case SHT_NOTE:
+    case SHT_PROGBITS:
+    case SHT_STRTAB:
+      return true;
+    default:
+      return false;
+    }
 }
 
 static inline unsigned long
@@ -5260,13 +5297,13 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 	  skip (data, TEST_OPTIMIZATION, source, "Compiled with -Og");
 	  
 	  /* Add a pass result so that we do not complain about lack of optimization information.  */
-	  if (tests[TEST_OPTIMIZATION].state == STATE_UNTESTED)
+	  if (untested (TEST_OPTIMIZATION))
 	    tests[TEST_OPTIMIZATION].state = STATE_PASSED;
 	}
       else if (((value >> 9) & 3) < 2)
 	fail (data, TEST_OPTIMIZATION, source, "level too low (based upon annobin data)");
       else
-	pass (data, TEST_OPTIMIZATION, source, NULL);
+	pass (data, TEST_OPTIMIZATION, source, "sufficient optimization level used when compiling");
     }
 
   if (! skip_test (TEST_FAST))
@@ -5295,7 +5332,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
       if (value & (1 << 14))
 	{
 	  /* Compiled with -Wall.  */
-	  pass (data, TEST_WARNINGS, source, NULL);
+	  pass (data, TEST_WARNINGS, source, "compiled with -Wall");
 	}
       else if (value & (1 << 15))
 	{
@@ -5304,7 +5341,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 	     any warnings enabled by -Wall that are important.  (Missing -Wall
 	     itself is not bad - this happens with LTO compilation - but we
 	     still want important warnings enabled).  */
-	  pass (data, TEST_WARNINGS, source, NULL);
+	  pass (data, TEST_WARNINGS, source, "compiled with -Wformat-security");
 	}
       /* FIXME: At the moment the clang plugin is unable to detect -Wall.
 	 for clang v9+.  */
@@ -5319,7 +5356,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 	     above, but that does not work on stripped binaries.
 	     We set STATE_PASSED here so that show_WARNINGS does
 	     not complain about not finding any information.  */
-	  if (tests[TEST_WARNINGS].state == STATE_UNTESTED)
+	  if (untested (TEST_WARNINGS))
 	    tests[TEST_WARNINGS].state = STATE_PASSED;
 	}
       else
@@ -5983,12 +6020,12 @@ build_note_checker (annocheck_data *     data,
 	case 1:
 	case 2:
 	  /* Compiled wth -fpic not -fpie.  */
-	  pass (data, TEST_PIC, SOURCE_ANNOBIN_NOTES, NULL);
+	  pass (data, TEST_PIC, SOURCE_ANNOBIN_NOTES, "compiled with -fpic");
 	  break;
 
 	case 3:
 	case 4:
-	  pass (data, TEST_PIC, SOURCE_ANNOBIN_NOTES, NULL);
+	  pass (data, TEST_PIC, SOURCE_ANNOBIN_NOTES, "compiled with -fpie");
 	  break;
 	}
       break;
@@ -6211,7 +6248,7 @@ build_note_checker (annocheck_data *     data,
 	      break;
 
 	    case 1:
-	      pass (data, TEST_GLIBCXX_ASSERTIONS, SOURCE_ANNOBIN_NOTES, NULL);
+	      pass (data, TEST_GLIBCXX_ASSERTIONS, SOURCE_ANNOBIN_NOTES, "compiled with -D_GLIBCXX_ASSERTIONS=1");
 	      break;
 
 	    default:
@@ -6298,7 +6335,7 @@ build_note_checker (annocheck_data *     data,
 	      break;
 
 	    case 1:
-	      pass (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_NOTES, NULL);
+	      pass (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_NOTES, "compiled with -fstack-clash-protection");
 	      break;
 
 	    default:
@@ -6331,7 +6368,7 @@ build_note_checker (annocheck_data *     data,
 	      break;
 
 	    case 1:
-	      pass (data, TEST_STACK_REALIGN, SOURCE_ANNOBIN_NOTES, NULL);
+	      pass (data, TEST_STACK_REALIGN, SOURCE_ANNOBIN_NOTES, "-mstackrealign enabled");
 	      break;
 	    }
 	}
@@ -6533,7 +6570,7 @@ property_note_checker (annocheck_data *     data,
   if (is_executable ())
     {
       /* More than one note in an executable is an error.  */
-      if (tests[TEST_PROPERTY_NOTE].state == STATE_PASSED)
+      if (already_passed (TEST_PROPERTY_NOTE))
 	{
 	  /* The loader will only process the first note, so having more than one is an error.  */
 	  reason = "there is more than one GNU Property note";
@@ -6874,7 +6911,7 @@ check_annobin_glibcxx_assert (annocheck_data *    data,
       break;
 
     case '1':
-      pass (data, TEST_GLIBCXX_ASSERTIONS, SOURCE_ANNOBIN_STRING_NOTES, NULL);
+      pass (data, TEST_GLIBCXX_ASSERTIONS, SOURCE_ANNOBIN_STRING_NOTES, "compiled with -D_GLIBCXX_ASSERTIONS");
       break;
 
     default:
@@ -6977,7 +7014,7 @@ check_annobin_pic_setting (annocheck_data *    data,
     case '2':
     case '3':
     case '4':
-      pass (data, TEST_PIC, SOURCE_ANNOBIN_STRING_NOTES, NULL);
+      pass (data, TEST_PIC, SOURCE_ANNOBIN_STRING_NOTES, "compiled with -fpic/-fpie");
       break;
 
     default:
@@ -7187,7 +7224,7 @@ check_annobin_i686_stack_realign (annocheck_data *    data,
       break;
 
     case '1':
-      pass (data, TEST_STACK_REALIGN, SOURCE_ANNOBIN_STRING_NOTES, NULL);
+      pass (data, TEST_STACK_REALIGN, SOURCE_ANNOBIN_STRING_NOTES, "compiled with -mstackrealign");
       break;
     }
 }
@@ -7418,9 +7455,9 @@ check_dynamic_section (annocheck_data *    data,
 
   per_file.has_dynamic_segment = true;
 
-  if (tests[TEST_DYNAMIC_SEGMENT].state == STATE_UNTESTED)
-    pass (data, TEST_DYNAMIC_SEGMENT, SOURCE_DYNAMIC_SECTION, NULL);
-  else if (tests[TEST_DYNAMIC_SEGMENT].state == STATE_PASSED)
+  if (untested (TEST_DYNAMIC_SEGMENT))
+    pass (data, TEST_DYNAMIC_SEGMENT, SOURCE_DYNAMIC_SECTION, "dynamic section found");
+  else if (already_passed (TEST_DYNAMIC_SEGMENT))
     /* Note - we test sections before segments, so we do not
        have to worry about interesting_seg() PASSing this test.  */
     fail (data, TEST_DYNAMIC_SEGMENT, SOURCE_DYNAMIC_SECTION, "multiple dynamic sections detected");
@@ -7576,7 +7613,7 @@ check_dynamic_section (annocheck_data *    data,
     fail (data, TEST_RHIVOS, SOURCE_DYNAMIC_SECTION, "RHIVOS does not support the use of the .hash section.  Please use --hash-style=gnu");
 #endif
   
-  if (dynamic_relocs_seen && tests[TEST_BIND_NOW].state != STATE_PASSED)
+  if (dynamic_relocs_seen && ! already_passed (TEST_BIND_NOW))
     {
       if (! is_executable ())
 	skip (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "not an executable");
@@ -7602,6 +7639,12 @@ check_dynamic_section (annocheck_data *    data,
 	{
 	  skip (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION,
 		"GO/Rust binaries do not set the BTI_PLT flag in the dynamic tags");
+	}
+      else if (annocheck_has_separate_debuginfo_link (data->dwarf_info.dwarf))
+	{
+	  /* Delay passing/failing these tests until after the separate debug
+	     info file has been processed.  It may contain a .ARM.attributes
+	     section which obliviates the need for AArch64 dynamic flags.  */
 	}
       else
 	{
@@ -7637,7 +7680,7 @@ check_dynamic_section (annocheck_data *    data,
 	    break;
 
 	  case 3:
-	    pass (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, NULL);
+	    pass (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "expected dynamic flags found");
 	    fail (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI (and PAC) flags are present in the dynamic tags");
 	    break;
 	  }
@@ -8123,6 +8166,214 @@ check_symbol_section (annocheck_data * data, annocheck_section * sec)
   return true;
 }
 
+/* Read a ULEB128 encoded value from DATA up to a maximum of MAX bytes.
+   Returns the number of bytes used or 0 upon failure.
+   Returns the read value in RETURN_VAL upon success.
+   FIXME: This function should probably return a uint64_4.  */
+
+static unsigned int
+read_uleb128 (const unsigned char * data, unsigned int max, unsigned int * return_val)
+{
+  unsigned int result = 0;
+  unsigned int read = 0;
+  unsigned int shift = 0;
+
+  if (data == NULL || max == 0 || return_val == NULL)
+    {
+      einfo (ERROR, "read_uleb128() called with bad parameters\n");
+      return 0;
+    }
+
+  do
+    {
+      unsigned char byte = * data ++;
+
+      result |= (byte & 0x7f) << shift;
+      shift += 7;
+      read += 1;
+      if ((byte & 0x80) == 0)
+	break;
+      else if (read == max)
+	{
+	  einfo (ERROR, "read_uleb128() ran out of bytes processing a ULEB128 encoded value\n");
+	  return 0;
+	}
+    }
+  while (1);
+
+  * return_val = result;
+  return read;
+}
+
+static bool
+check_aarch64_attributes (annocheck_data *     data,
+			  annocheck_section *  sec)
+{
+  if (per_file.e_machine != EM_AARCH64)
+    {
+      /* An AArch64 attribute section in a non-AArch64 machine file ?
+	 Possibly the section type attribute overlaps with another architecture's usage ?  */
+      einfo (VERBOSE2, "check_aarch64_attribute called for a non AArch64 architecture\n");
+      return false;
+    }
+
+  const unsigned char * buf = (const unsigned char *) sec->data->d_buf;
+  unsigned int len = sec->data->d_size;
+
+  if (len == 0)
+    {
+      einfo (ERROR, "check_aarch64_attribute: the .ARM.attribute section is empty\n");
+      return false;
+    }
+
+  if (* buf != 'A')
+    {
+      /* Only version 1 (aka 'A') attributes are handled here.  */
+      einfo (ERROR, "check_aarch64_attribute: the .ARM.attribute section uses an unsupported version\n");
+      return false;
+    }
+
+  ++ buf;
+  -- len;
+  
+#define MIN_AARCH64_ATTR_LEN 7  /* Minimum attribute length.  */
+  
+  while (len >= MIN_AARCH64_ATTR_LEN)
+    {
+      unsigned int attribute_length = get_4byte_value (buf);
+
+      if (attribute_length > len || attribute_length < MIN_AARCH64_ATTR_LEN)
+	{
+	  einfo (ERROR, "check_aarch64_attribute: corrupt attribute detected\n");
+	  return false;
+	}
+
+      buf += 4;
+      len -= 4;
+      attribute_length -= 4;
+
+      const char * attribute_name = (const char *) buf;
+      unsigned int attribute_name_len = strnlen (attribute_name, attribute_length);
+
+      if (attribute_name_len == attribute_length)
+	{
+	  einfo (ERROR, "check_aarch64_attribute: unterminated attribute name\n");
+	  return false;
+	}
+
+#define AARCH64_ABI_FEATURES "aeabi_feature_and_bits"
+      if (! streq (attribute_name, AARCH64_ABI_FEATURES))
+	{
+	  /* This attribute does not interest us.  */
+	  buf += attribute_length;
+	  len -= attribute_length;
+
+	  einfo (VERBOSE2, "check_aarch64_attribute: ignoring attribute: %s\n", attribute_name);
+	  continue;
+	}
+
+      /* Allow for the terminating NUL.  */
+      attribute_name_len += 1;
+      
+      /* Skip past the name.  */
+      buf += attribute_name_len;
+      len -= attribute_name_len;
+      attribute_length -= attribute_name_len;
+
+      /* Read the "is optional" byte.  */
+      if (* buf > 1)
+	{
+	  /* Expected 0 or 1 here...  */
+	  einfo (ERROR, "check_aarch64_attribute: unexpected value for optional byte: %u\n", * buf);
+	  return false;
+	}
+      
+      buf += 1;
+      len -= 1;
+      attribute_length -= 1;
+
+      /* Read the encoding byte.  */
+      if (* buf != 0)
+	{
+	  /* We expected an encoding of ULEB128 (aka 0).  */
+	  einfo (ERROR, "check_aarch64_attribute: expected ULEB128 encoding, got: %u\n", * buf);
+	  return false;
+	}
+
+      buf += 1;
+      len -= 1;
+      attribute_length -= 1;
+
+      while (attribute_length > 0)
+	{
+	  unsigned int tag, got, val;
+
+	  got = read_uleb128 (buf, attribute_length, & tag);
+	  if (got == 0)
+	    {
+	      einfo (ERROR, "check_aarch64_attribute: failed to read attribute tag\n");
+	      return false;
+	    }
+	  buf += got;
+	  len -= got;
+	  attribute_length -= got;
+      
+	  got = read_uleb128 (buf, attribute_length, & val);
+	  if (got == 0)
+	    {
+	      einfo (ERROR, "check_aarch64_attribute: failed to read attribute value\n");
+	      return false;
+	    }
+	  buf += got;
+	  len -= got;
+	  attribute_length -= got;
+            
+	  switch (tag)
+	    {
+	    case 0 /* Tag_Feature_BTI */ :
+	      if (val == 0)
+		{
+		  if (already_passed (TEST_BRANCH_PROTECTION))
+		  /* This can happen when the binary has been compiled with branch
+		     protection enabled, but linked with system object files which
+		     do not have it enabled.  For now this is treated as a warning
+		     rather than a failure.  Once the system libraries catch up
+		     with branch protection labelling, it should be removed.  */
+		    warn (data, "ARM attributes section indicate that BTI is disabled");
+		  else
+		    fail (data, TEST_BRANCH_PROTECTION, SOURCE_ARM_ATTRIBUTES,
+			  "ARM attributes section indicate that BTI is disabled");
+		}
+	      else
+		pass (data, TEST_BRANCH_PROTECTION, SOURCE_ARM_ATTRIBUTES,
+		      "ARM attributes section indicate that BTI is enabled");
+
+	      pass (data, TEST_PROPERTY_NOTE, SOURCE_ARM_ATTRIBUTES,
+		    "an .ARM.attributes section obliviates the need for a .note.gnu.property section");
+	      pass (data, TEST_DYNAMIC_TAGS, SOURCE_ARM_ATTRIBUTES,
+		    "an .ARM.attributes section obliviates the need for the BTI_PLT dynamic flag");
+	      pass (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_ARM_ATTRIBUTES,
+		    "an .ARM.attributes section obliviates the need for the BTI_PLT dynamic flag");
+	      break;
+
+	    case 1 /* Tag_Feature_PAC */ :
+	    case 2 /* Tag_Feature_GCS */ :
+	    default:
+	      break;
+	    }
+	}
+    }
+
+  if (len > 0)
+    {
+      /* Extra data at the end of the section.  */
+      einfo (ERROR, "check_aarch64_attribute: extraneous bytes at the end of the section\n");
+      return false;
+    }
+
+  return true;
+}
+
 static bool
 check_sec (annocheck_data *     data,
 	   annocheck_section *  sec)
@@ -8130,8 +8381,8 @@ check_sec (annocheck_data *     data,
   if (disabled)
     return false;
 
-  /* Note - the types checked here should correspond to the types
-     selected in interesting_sec().  */
+  /* Note - the types checked here should correspond
+     to the types selected in interesting_sec().  */
   switch (sec->shdr.sh_type)
     {
     case SHT_SYMTAB:   /* Fall through.  */
@@ -8140,6 +8391,7 @@ check_sec (annocheck_data *     data,
     case SHT_STRTAB:   return check_string_section (data, sec);
     case SHT_DYNAMIC:  return check_dynamic_section (data, sec);
     case SHT_PROGBITS: return check_progbits_section (data, sec);
+    case SHT_AARCH64_ATTRIBUTES: return check_aarch64_attributes (data, sec);
     default:           return true;
     }
 }
@@ -8252,7 +8504,7 @@ interesting_seg (annocheck_data *    data,
       break;
 
     case PT_GNU_RELRO:
-      pass (data, TEST_GNU_RELRO, SOURCE_SEGMENT_HEADERS, NULL);
+      pass (data, TEST_GNU_RELRO, SOURCE_SEGMENT_HEADERS, "GNU RELRO segment found");
       break;
 
     case PT_GNU_STACK:
@@ -8272,7 +8524,7 @@ interesting_seg (annocheck_data *    data,
 
     case PT_DYNAMIC:
       per_file.has_dynamic_segment = true;
-      pass (data, TEST_DYNAMIC_SEGMENT, SOURCE_SEGMENT_HEADERS, NULL);
+      pass (data, TEST_DYNAMIC_SEGMENT, SOURCE_SEGMENT_HEADERS, "dynamic segment found");
       /* FIXME: We do not check to see if there is a second dynamic segment.
 	 Checking is complicated by the fact that there can be both a dynamic
 	 segment and a dynamic section.  */
@@ -8438,7 +8690,7 @@ check_seg (annocheck_data *    data,
 	      && entry_bytes[1] == 0x0f
 	      && entry_bytes[2] == 0x1e
 	      && entry_bytes[3] == 0xfa)
-	    pass (data, TEST_ENTRY, SOURCE_SEGMENT_CONTENTS, NULL);
+	    pass (data, TEST_ENTRY, SOURCE_SEGMENT_CONTENTS, "entry point instructions OK");
 	  else
 	    {
 	      fail (data, TEST_ENTRY, SOURCE_SEGMENT_CONTENTS, "instruction at entry is not ENDBR64");
@@ -8455,7 +8707,7 @@ check_seg (annocheck_data *    data,
 	      && entry_bytes[1] == 0x0f
 	      && entry_bytes[2] == 0x1e
 	      && entry_bytes[3] == 0xfb)
-	    pass (data, TEST_ENTRY, SOURCE_SEGMENT_CONTENTS, NULL);
+	    pass (data, TEST_ENTRY, SOURCE_SEGMENT_CONTENTS, "entry point instructions OK");
 	  else
 	    {
 	      fail (data, TEST_ENTRY, SOURCE_SEGMENT_CONTENTS, "instruction at entry is not ENDBR32");
@@ -8502,7 +8754,7 @@ check_seg (annocheck_data *    data,
       else
 	/* FIXME: We should check the contents of the note.  */
 	/* FIXME: We should check so see if there is a second note.  */
-	pass (data, TEST_PROPERTY_NOTE, SOURCE_SEGMENT_CONTENTS, NULL);
+	pass (data, TEST_PROPERTY_NOTE, SOURCE_SEGMENT_CONTENTS, "property notes found");
     }
   /* FIXME: Should we complain about other note types ?  */
 
@@ -9363,15 +9615,15 @@ static struct result_counters
 static bool
 finish (annocheck_data * data)
 {
-  if (disabled || per_file.debuginfo_file)
+  if (disabled || per_file.is_debuginfo_file)
     return true;
 
-  struct checker hardened_notechecker =
+  struct checker hardened_debuginfo_checker =
     {
       HARDENED_CHECKER_NAME,
       NULL,  /* altname */
       NULL,  /* start_file */
-      interesting_note_sec,
+      interesting_debuginfo_sec,
       check_sec,
       NULL, /* interesting_seg */
       NULL, /* check_seg */
@@ -9392,7 +9644,7 @@ finish (annocheck_data * data)
       && data->dwarf_info.fd != data->fd)
     {
       einfo (VERBOSE2, "%s: info: running subchecker on %s", get_filename (data), data->dwarf_info.filename);
-      annocheck_process_extra_file (& hardened_notechecker, data->dwarf_info.filename,
+      annocheck_process_extra_file (& hardened_debuginfo_checker, data->dwarf_info.filename,
 				    get_filename (data), data->dwarf_info.fd);
     }
   /* There could have been dwarf info in the main file and yet
@@ -9419,13 +9671,14 @@ finish (annocheck_data * data)
 	{
 	  einfo (VERBOSE2, "%s: info: running subchecker on %s", get_filename (data), filename);
 
-	  annocheck_process_extra_file (& hardened_notechecker, filename, get_filename (data), fd);
+	  annocheck_process_extra_file (& hardened_debuginfo_checker, filename, get_filename (data), fd);
 
 	  (void) close (fd);
 	  free (filename);
 	}
     }
-  else einfo (VERBOSE2, "%s: no need to run a subchecker", get_filename (data));
+  else
+    einfo (VERBOSE2, "%s: no need to run a subchecker", get_filename (data));
 
   bool exception_for_gcc = is_gcc_component (data);
   bool exception_for_glibc = is_special_glibc_binary (data);
@@ -9510,7 +9763,7 @@ finish (annocheck_data * data)
       if (tests[i].future && ! enable_future_tests)
 	continue;
 
-      if (tests[i].state == STATE_UNTESTED)
+      if (untested (i))
 	{
 	  switch (i)
 	    {
@@ -9596,7 +9849,7 @@ finish (annocheck_data * data)
 	    case TEST_BIND_NOW:
 	      if (! is_executable ())
 		skip (data, i, SOURCE_FINAL_SCAN, "only needed for executables");
-	      else if (tests[TEST_DYNAMIC_SEGMENT].state == STATE_UNTESTED)
+	      else if (untested (TEST_DYNAMIC_SEGMENT))
 		skip (data, i, SOURCE_FINAL_SCAN, "no dynamic segment present");
 	      else
 		skip (data, i, SOURCE_FINAL_SCAN, "no dynamic relocs found");
@@ -9605,9 +9858,9 @@ finish (annocheck_data * data)
 	    case TEST_GNU_RELRO:
 	      if (is_object_file ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not needed in object files");
-	      else if (tests[TEST_DYNAMIC_SEGMENT].state == STATE_UNTESTED)
+	      else if (untested (TEST_DYNAMIC_SEGMENT))
 		skip (data, i, SOURCE_FINAL_SCAN, "no dynamic segment present");
-	      else if (tests [TEST_BIND_NOW].state == STATE_UNTESTED)
+	      else if (untested (TEST_BIND_NOW))
 		skip (data, i, SOURCE_FINAL_SCAN, "no dynamic relocations");
 	      else if (GO_compiler_seen ())
 		/* FIXME: Should be changed once GO supports PIE & BIND_NOW.  */
@@ -9925,9 +10178,9 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "sanitize_cfi is not currently required for LLVM compilation");
 	      else if (test_enabled (TEST_PROPERTY_NOTE))
 		{
-		  if (tests[TEST_PROPERTY_NOTE].state == STATE_UNTESTED)
+		  if (untested (TEST_PROPERTY_NOTE))
 		    fail (data, i, SOURCE_FINAL_SCAN, "no .note.gnu.property section = no control flow information");
-		  else if (tests[TEST_PROPERTY_NOTE].state != STATE_PASSED)
+		  else if (! already_passed (TEST_PROPERTY_NOTE))
 		    fail (data, i, SOURCE_FINAL_SCAN, ".note.gnu.property section did not contain the expected notes");
 		  else
 		    pass (data, i, SOURCE_FINAL_SCAN, "control flow information is correct");

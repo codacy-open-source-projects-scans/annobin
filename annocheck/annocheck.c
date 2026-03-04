@@ -791,6 +791,9 @@ annocheck_has_separate_debuginfo_link (Dwarf * dwarf)
 {
   GElf_Word crc = 0;
 
+  if (dwarf == NULL)
+    return false;
+
   if (dwelf_elf_gnu_debuglink (dwarf_getelf (dwarf), & crc) != NULL)
     return true;
 
