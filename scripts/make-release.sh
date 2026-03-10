@@ -4,7 +4,7 @@
 # license   : GNU GFDL v1.3; see accompanying LICENSE file.
 
 # A script to create a release tarball from a cloned copy of the source repository.
-# Expects to be run in a directory above the sources.
+# Expects to be run in a directory above the cloned source tree.
 # Expects to find the sources inside a directory called SRCDIR,
 # which defaults to 'current' if not specified in the environment.
 

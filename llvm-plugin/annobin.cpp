@@ -13,7 +13,9 @@
   GNU General Public License for more details.  */
 
 #include "llvm/Pass.h"
-#if __clang_major__ > 12
+#if __clang_major__ > 21
+#include "llvm/Plugins/PassPlugin.h"
+#elif __clang_major__ > 12
 #include "llvm/Passes/PassPlugin.h"
 #endif
 #include "llvm/IR/Module.h"
