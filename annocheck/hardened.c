@@ -5735,25 +5735,25 @@ parse_aarch64_branch_protection_note (annocheck_data *  data,
 	   /* We use startswith() because pac-ret can be optionally followed by +leaf and/or +b-key.  */
 	   || startswith (attr, "pac-ret"))
     {
-      fail (data, TEST_NOT_BRANCH_PROTECTION, source, "protection enabled");
+      maybe (data, TEST_NOT_BRANCH_PROTECTION, source, "branch protection is enabled - but not supported by the OS");
       /* Do not PASS this test yet - there may be later notes that fail.  */
       per_file.branch_protection_pending_pass = true;
     }
   else if (strstr (attr, "bti"))
     {
-      fail (data, TEST_BRANCH_PROTECTION, source, "only partially enabled (bti enabled pac-ret disabled)");
-      fail (data, TEST_NOT_BRANCH_PROTECTION, source, "only partially disabled (bti is still enabled)");
+      fail (data, TEST_BRANCH_PROTECTION, source, "only partially enabled (bti enabled, pac-ret disabled)");
+      maybe (data, TEST_NOT_BRANCH_PROTECTION, source, "branch protection is partially enabled, but not supported by the OS");
     }
   else if (strstr (attr, "pac-ret"))
     {
       fail (data, TEST_BRANCH_PROTECTION, source, "only partially enabled (pac-ret enabled, bti disabled)");
-      fail (data, TEST_NOT_BRANCH_PROTECTION, source, "only partially disabled (pac-ret is still enabled)");
+      maybe (data, TEST_NOT_BRANCH_PROTECTION, source, "branch protection is partially enabled, but not supported by the OS");
     }
   else
     {
       maybe (data, TEST_BRANCH_PROTECTION, source, "unexpected note value");
       maybe (data, TEST_NOT_BRANCH_PROTECTION, source, "unexpected note value");
-      einfo (VERBOSE2, "debug: branch protections note value: %s", attr);
+      einfo (VERBOSE2, "debug: branch protection note value: %s", attr);
     }
 }
 
@@ -7668,7 +7668,7 @@ check_dynamic_section (annocheck_data *    data,
 		future_fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the PAC_PLT flag is missing from dynamic tags");
 		pass (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is present in the dynamic tags");
 	      }
-	    fail (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is present in the dynamic tags");
+	    maybe (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is present in the dynamic tags, but it is not supported by the OS");
 	    break;
 
 	  case 2:
@@ -7676,12 +7676,12 @@ check_dynamic_section (annocheck_data *    data,
 	      skip (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "some AArch64 GCC binaries are built without branch protection");
 	    else
 	      fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is missing from the dynamic tags");
-	    fail (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the PAC_PLT flag is present in the dynamic tags");
+	    maybe (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the PAC_PLT flag is present in the dynamic tags, but it is not supported by the OS");
 	    break;
 
 	  case 3:
 	    pass (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "expected dynamic flags found");
-	    fail (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI (and PAC) flags are present in the dynamic tags");
+	    maybe (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI and PAC flags are present in the dynamic tags, but they are not supported by the OS");
 	    break;
 	  }
 	}
@@ -10234,8 +10234,10 @@ finish (annocheck_data * data)
 		    pass (data, i, SOURCE_FINAL_SCAN, "-mbranch-protection has been used correctly");
 		  else if (exception_for_gcc)
 		    skip (data, i, SOURCE_FINAL_SCAN, "some gcc files are built without branch protection");
-		  else
+		  else if (i == TEST_BRANCH_PROTECTION)
 		    fail (data, i, SOURCE_FINAL_SCAN, "the -mbranch-protection option was not used");
+		  else
+		    skip (data, i, SOURCE_FINAL_SCAN, "no branch protection was requested");
 		}
 	      else
 		{

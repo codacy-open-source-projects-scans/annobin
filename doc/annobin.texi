@@ -2141,9 +2141,10 @@ If necessary the test can be disabled via the
   Waive If: Not running on AArch64
   Waive If: The application will run on Fedora 35 or later.
   Waive If: The application will not run on newer AArch64 cores.
+  Waive If: The application does not expect to have branch protection.
 
-  Example:  FAIL: not branch protection test because protection enabled
-  Example:  FAIL: not branch protection test because only partially disabled
+  Example:  MAYB: not branch protection test because branch protection is enabled - but not supported by the OS
+  Example:  MAYB: not branch protection test because branch protection is partially enabled, but not supported by the OS
 @end smallexample
 
 Note - this test is the inverse of the @ref{Test branch protection} test
@@ -2151,11 +2152,13 @@ and directly related to the @ref{Test not dynamic tags} test.
 
 This test checks to see if the compile time option to enable the
 AArch64 branch protection security feature was used.  This feature
-is only supported on newer versions of AArch64 core, and will not work
-on older cores.  Hence this test checks to make sure that the option
-was not used, or was used but was set to disable the feature.
+is only supported on newer versions of AArch64 core, and will not
+be effective on older cores.  (Enabling branch protection will not
+stop the application from working, but it will be run without the
+expected protection).  Hence this test checks to make sure that the
+option was not used, or was used but was set to disable the feature.
 
-The security features can be disabled by compiling with the
+The branch protection feature can be disabled by compiling with the
 @option{-mbranch-protection=none} gcc command line option.
 
 Note - this test is automatically disabled if one of the following
@@ -2163,6 +2166,7 @@ profile options is used:
 
 @table @code
 @item @option{--profile=rawhide}
+@item @option{--profile=f44}
 @item @option{--profile=f43}
 @item @option{--profile=f42}
 @item @option{--profile=f41}
@@ -2198,10 +2202,11 @@ If necessary the test can be disabled via the
   Waive If: Not running on AArch64
   Waive If: The application will run on Fedora 35 or later.
   Waive If: The application will not run on newer AArch64 cores.
+  Waive If: The application does not expect to have branch protection.
 
-  Example:  FAIL: not dynamic tags test because BTI_PLT and PAC_PLT flags are present in the dynamic tags
-  Example:  FAIL: not dynamic tags test because BTI_PLT flag is present in the dynamic tags
-  Example:  FAIL: not dynamic tags test because PAC_PLT flag is present in the dynamic tags
+  Example:  MAYB: not dynamic tags test because the BTI and PAC flags are present in the dynamic tags, but they are not supported by the OS
+  Example:  MAYB: not dynamic tags test because the BTI_PLT flag is present in the dynamic tags, but it is not supported by the OS
+  Example:  MAYB: not dynamic tags test because the PAC_PLT flag is present in the dynamic tags, but it is not supported by the OS
 @end smallexample
 
 Note - this test is the inverse of the @ref{Test dynamic tags} test
@@ -2211,7 +2216,9 @@ This test checks to see if executable AArch64 binaries have been
 marked as supporting the @var{BTI} and @var{PAC} security features.
 Such features require the support of the run-time loader in order to
 work, and this test is intended for environments where this support is
-missing.  (Such as RHEL or pre version-35 Fedora).
+missing.  (Such as RHEL or pre version-35 Fedora).  Note - a binary
+that requests the @var{BTI} and @var{PAC} features will still work on
+older hardware, it just will not have the requested protections.
 
 The security features can be disabled by compiling with the
 @option{-mbranch-protection=none} gcc command line option.
@@ -2221,6 +2228,7 @@ profile options is used:
 
 @table @code
 @item @option{--profile=rawhide}
+@item @option{--profile=f44}
 @item @option{--profile=f43}
 @item @option{--profile=f42}
 @item @option{--profile=f41}

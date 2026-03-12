@@ -1987,26 +1987,30 @@ File: annobin.info,  Node: Test not branch protection,  Next: Test not dynamic t
        Waive If: Not running on AArch64
        Waive If: The application will run on Fedora 35 or later.
        Waive If: The application will not run on newer AArch64 cores.
+       Waive If: The application does not expect to have branch protection.
 
-       Example:  FAIL: not branch protection test because protection enabled
-       Example:  FAIL: not branch protection test because only partially disabled
+       Example:  MAYB: not branch protection test because branch protection is enabled - but not supported by the OS
+       Example:  MAYB: not branch protection test because branch protection is partially enabled, but not supported by the OS
 
    Note - this test is the inverse of the *note Test branch protection::
 test and directly related to the *note Test not dynamic tags:: test.
 
    This test checks to see if the compile time option to enable the
 AArch64 branch protection security feature was used.  This feature is
-only supported on newer versions of AArch64 core, and will not work on
-older cores.  Hence this test checks to make sure that the option was
+only supported on newer versions of AArch64 core, and will not be
+effective on older cores.  (Enabling branch protection will not stop the
+application from working, but it will be run without the expected
+protection).  Hence this test checks to make sure that the option was
 not used, or was used but was set to disable the feature.
 
-   The security features can be disabled by compiling with the
+   The branch protection feature can be disabled by compiling with the
 ‘-mbranch-protection=none’ gcc command line option.
 
    Note - this test is automatically disabled if one of the following
 profile options is used:
 
 ‘--profile=rawhide’
+‘--profile=f44’
 ‘--profile=f43’
 ‘--profile=f42’
 ‘--profile=f41’
@@ -2040,10 +2044,11 @@ File: annobin.info,  Node: Test not dynamic tags,  Next: Test notes,  Prev: Test
        Waive If: Not running on AArch64
        Waive If: The application will run on Fedora 35 or later.
        Waive If: The application will not run on newer AArch64 cores.
+       Waive If: The application does not expect to have branch protection.
 
-       Example:  FAIL: not dynamic tags test because BTI_PLT and PAC_PLT flags are present in the dynamic tags
-       Example:  FAIL: not dynamic tags test because BTI_PLT flag is present in the dynamic tags
-       Example:  FAIL: not dynamic tags test because PAC_PLT flag is present in the dynamic tags
+       Example:  MAYB: not dynamic tags test because the BTI and PAC flags are present in the dynamic tags, but they are not supported by the OS
+       Example:  MAYB: not dynamic tags test because the BTI_PLT flag is present in the dynamic tags, but it is not supported by the OS
+       Example:  MAYB: not dynamic tags test because the PAC_PLT flag is present in the dynamic tags, but it is not supported by the OS
 
    Note - this test is the inverse of the *note Test dynamic tags:: test
 and directly related to the *note Test not branch protection:: test.
@@ -2052,7 +2057,9 @@ and directly related to the *note Test not branch protection:: test.
 marked as supporting the BTI and PAC security features.  Such features
 require the support of the run-time loader in order to work, and this
 test is intended for environments where this support is missing.  (Such
-as RHEL or pre version-35 Fedora).
+as RHEL or pre version-35 Fedora).  Note - a binary that requests the
+BTI and PAC features will still work on older hardware, it just will not
+have the requested protections.
 
    The security features can be disabled by compiling with the
 ‘-mbranch-protection=none’ gcc command line option.
@@ -2061,6 +2068,7 @@ as RHEL or pre version-35 Fedora).
 profile options is used:
 
 ‘--profile=rawhide’
+‘--profile=f44’
 ‘--profile=f43’
 ‘--profile=f42’
 ‘--profile=f41’
@@ -4562,54 +4570,54 @@ Node: Test instrumentation76610
 Node: Test load segments77487
 Node: Test lto79186
 Node: Test not branch protection80302
-Node: Test not dynamic tags82206
-Node: Test notes84216
-Node: Test only go86879
-Node: Test OpenSSL Engine88045
-Node: Test optimization89141
-Node: Test pic90560
-Node: Test pie92134
-Node: Test production93443
-Node: Test property note94283
-Node: Test rhivos96771
-Node: Test run path99395
-Node: Test rwx seg101634
-Node: Test short enums101980
-Node: Test stack clash103022
-Node: Test stack prot104508
-Node: Test stack realign105861
-Node: Test textrel107151
-Node: Test threads108460
-Node: Test unicode109292
-Node: Test warnings110828
-Node: Test writable got111684
-Node: Test zero call used regs112982
-Node: Hardened Command Line Options114268
-Node: Waiving Hardened Results123183
-Node: Absence of compiled code125205
-Node: Notes132209
-Node: Size132855
-Node: Timing135573
-Node: Libannocheck136232
-Node: libannocheck_init138187
-Node: libannocheck_finish139109
-Node: libannocheck_get_version139657
-Node: libannocheck_get_error_message140070
-Node: libannocheck_get_known_tests140710
-Node: libannocheck_enable_all_tests141888
-Node: libannocheck_disable_all_tests142371
-Node: libannocheck_enable_test142931
-Node: libannocheck_disable_test143611
-Node: libannocheck_enable_profile144292
-Node: libannocheck_get_known_profiles144814
-Node: libannocheck_run_tests145517
-Node: Configure Options146366
-Node: Legacy Scripts149111
-Node: Who Built Me149894
-Node: ABI Checking152785
-Node: Hardening Checks155032
-Node: Checking Archives159380
-Node: GNU FDL161931
+Node: Test not dynamic tags82528
+Node: Test notes84886
+Node: Test only go87549
+Node: Test OpenSSL Engine88715
+Node: Test optimization89811
+Node: Test pic91230
+Node: Test pie92804
+Node: Test production94113
+Node: Test property note94953
+Node: Test rhivos97441
+Node: Test run path100065
+Node: Test rwx seg102304
+Node: Test short enums102650
+Node: Test stack clash103692
+Node: Test stack prot105178
+Node: Test stack realign106531
+Node: Test textrel107821
+Node: Test threads109130
+Node: Test unicode109962
+Node: Test warnings111498
+Node: Test writable got112354
+Node: Test zero call used regs113652
+Node: Hardened Command Line Options114938
+Node: Waiving Hardened Results123853
+Node: Absence of compiled code125875
+Node: Notes132879
+Node: Size133525
+Node: Timing136243
+Node: Libannocheck136902
+Node: libannocheck_init138857
+Node: libannocheck_finish139779
+Node: libannocheck_get_version140327
+Node: libannocheck_get_error_message140740
+Node: libannocheck_get_known_tests141380
+Node: libannocheck_enable_all_tests142558
+Node: libannocheck_disable_all_tests143041
+Node: libannocheck_enable_test143601
+Node: libannocheck_disable_test144281
+Node: libannocheck_enable_profile144962
+Node: libannocheck_get_known_profiles145484
+Node: libannocheck_run_tests146187
+Node: Configure Options147036
+Node: Legacy Scripts149781
+Node: Who Built Me150564
+Node: ABI Checking153455
+Node: Hardening Checks155702
+Node: Checking Archives160050
+Node: GNU FDL162601
 
 End Tag Table
 
