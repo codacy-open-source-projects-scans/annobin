@@ -856,11 +856,12 @@ static const Dwfl_Callbacks dwfl_callbacks =
 bool
 annocheck_open_separate_debuginfo_file (annocheck_data * data, char ** filename_return, int * fd_return)
 {
-  size_t  canon_dirlen = 0;
-  char *  canon_dir = NULL;
-  int     fd = -1;
-  char *  debugfile = NULL;
-  char *  build_id_name = NULL;
+  size_t        canon_dirlen = 0;
+  char *        canon_dir = NULL;
+  int           fd = -1;
+  char *        debugfile = NULL;
+  char *        build_id_name = NULL;
+  const char *  link = NULL;
 
   adinfo (data->dwarf_info.warned == 1 ? VERBOSE : VERBOSE2,
 	  data, "Attempting to locate separate debuginfo file");
@@ -971,7 +972,6 @@ annocheck_open_separate_debuginfo_file (annocheck_data * data, char ** filename_
 
   /* Now try using a .gnu.debuglink section.  */
   GElf_Word     crc;
-  const char *  link;
 
   if ((link = dwelf_elf_gnu_debuglink (data->elf, & crc)) == NULL)
     {
