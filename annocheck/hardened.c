@@ -631,6 +631,36 @@ is_x86 (void)
 }
 
 static inline bool
+is_aarch64 (void)
+{
+  return per_file.e_machine == EM_AARCH64;
+}
+
+static inline bool
+is_ppc64 (void)
+{
+  return per_file.e_machine == EM_PPC64;
+}
+
+static inline bool
+is_s390 (void)
+{
+  return per_file.e_machine == EM_S390;
+}
+
+static inline bool
+is_arm (void)
+{
+  return per_file.e_machine == EM_ARM;
+}
+
+static inline bool
+is_riscv (void)
+{
+  return per_file.e_machine == EM_RISCV;
+}
+
+static inline bool
 is_executable (void)
 {
   return per_file.e_type == ET_EXEC || per_file.e_type == ET_DYN;
@@ -4434,7 +4464,7 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 
       if (skip_test (TEST_BRANCH_PROTECTION))
 	;
-      else if (per_file.e_machine != EM_AARCH64)
+      else if (! is_aarch64 ())
 	;
       else if ((place = strstr (string, "-mbranch-protection=")) != NULL)
 	{
@@ -4814,7 +4844,7 @@ interesting_sec (annocheck_data *     data,
        || sec->shdr.sh_type == SHT_DYNSYM))
     return true;
 
-  if (sec->shdr.sh_type == SHT_AARCH64_ATTRIBUTES)
+  if (is_aarch64() && sec->shdr.sh_type == SHT_AARCH64_ATTRIBUTES)
     return true;
 
   if (per_file.is_debuginfo_file)
@@ -5836,7 +5866,7 @@ build_note_checker (annocheck_data *     data,
 
       if (start > end)
 	{
-	  if (per_file.e_machine == EM_PPC64 && (start - end) <= 4)
+	  if (is_ppc64 () && (start - end) <= 4)
 	    /* On the PPC64, start symbols are biased by 4, but end symbols are not...  */
 	    start = end;
 	  else
@@ -6087,7 +6117,7 @@ build_note_checker (annocheck_data *     data,
     case 'b':
       if (startswith (attr, "branch_protection:"))
 	{
-	  if (per_file.e_machine != EM_AARCH64)
+	  if (! is_aarch64 ())
 	    /* FIXME: A branch protection note for a non AArch64 binary is suspicious...  */
 	    break;
 
@@ -6319,7 +6349,7 @@ build_note_checker (annocheck_data *     data,
     case 's':
       if (streq (attr, "stack_clash"))
 	{
-	  if (per_file.e_machine == EM_ARM)
+	  if (is_arm ())
 	    break;
 
 	  if (skip_test (TEST_STACK_CLASH))
@@ -6328,7 +6358,7 @@ build_note_checker (annocheck_data *     data,
 	  switch (value)
 	    {
 	    case 0:
-	      if (per_file.e_machine == EM_RISCV)
+	      if (is_riscv ())
 		skip (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_NOTES, "-fstack-clash-protection not enabled on RISC-V");
 	      else
 		fail (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_NOTES, "-fstack-clash-protection not enabled");		
@@ -6346,7 +6376,7 @@ build_note_checker (annocheck_data *     data,
 	}
       else if (streq (attr, "stack_realign"))
 	{
-	  if (per_file.e_machine != EM_386)
+	  if (! is_i686 ())
 	    break;
 
 	  if (skip_test (TEST_STACK_REALIGN))
@@ -6616,15 +6646,15 @@ property_note_checker (annocheck_data *     data,
       handler = handle_aarch64_property_note;
       break;
 
-    default:
-      einfo (VERBOSE2, "%s: WARN: Property notes for architecture %d not handled (yet)",
-	     get_filename (data), per_file.e_machine);
-      return NULL;
-
     case EM_386:
       /* -fcf-protection has been dropped for x86 as it is not supported by the kernel.
 	 Hence there is no need to check the property notes.  */
     case EM_PPC64:
+      return NULL;
+
+    default:
+      einfo (VERBOSE2, "%s: WARN: Property notes for architecture %d not handled (yet)",
+	     get_filename (data), per_file.e_machine);
       return NULL;
     }
 
@@ -6669,10 +6699,9 @@ property_note_checker (annocheck_data *     data,
    interest to the hardening checker".  */
 
 static bool
-supports_property_notes (int e_machine)
+supports_property_notes (void)
 {
-  return e_machine == EM_X86_64
-    || e_machine == EM_AARCH64;
+  return is_x86_64 () || is_aarch64 ();
 }
 
 static void
@@ -7064,7 +7093,7 @@ check_annobin_stack_clash (annocheck_data *    data,
   switch (ptr[index])
     {
     case '0':
-      if (per_file.e_machine == EM_RISCV)
+      if (is_riscv ())
 	skip (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_STRING_NOTES, "-fstack-clash-protection not used on RISC-V");
       else
 	fail (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_STRING_NOTES, "compiled without -fstack-clash-protection");
@@ -7179,8 +7208,8 @@ static void
 check_annobin_aarch64_bti (annocheck_data *    data,
 			   const char *        ptr)
 {
-  if (per_file.e_machine != EM_AARCH64)
-    /* FIXME: A branch protection note for a non AArch64 binary is suspicious...  */
+  if (! is_aarch64 ())
+    /* This can happen with Risc-V binaries which use the same section type for their notes.  */
     return;
 
   if (skip_test (TEST_BRANCH_PROTECTION) && skip_test (TEST_NOT_BRANCH_PROTECTION))
@@ -7193,7 +7222,7 @@ static void
 check_annobin_i686_stack_realign (annocheck_data *    data,
 				  const char *        ptr)
 {
-  if (per_file.e_machine != EM_386)
+  if (! is_i686 ())
     return;
 
   if (skip_test (TEST_STACK_REALIGN))
@@ -7628,7 +7657,7 @@ check_dynamic_section (annocheck_data *    data,
 	fail (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "not linked with -Wl,-z,now");
     }
 
-  if (per_file.e_machine == EM_AARCH64)
+  if (is_aarch64 ())
     {
       if (is_object_file ())
 	{
@@ -8209,12 +8238,11 @@ static bool
 check_aarch64_attributes (annocheck_data *     data,
 			  annocheck_section *  sec)
 {
-  if (per_file.e_machine != EM_AARCH64)
+  if (! is_aarch64 ())
     {
-      /* An AArch64 attribute section in a non-AArch64 machine file ?
-	 Possibly the section type attribute overlaps with another architecture's usage ?  */
-      einfo (VERBOSE2, "check_aarch64_attribute called for a non AArch64 architecture\n");
-      return false;
+      /* This can happen when the SHT_AARCH64_ATTRIBUTE section type matches with a value
+	 used by another architecture.  In particular the same value is used for the Risc-V.  */
+      return true;
     }
 
   const unsigned char * buf = (const unsigned char *) sec->data->d_buf;
@@ -8534,7 +8562,7 @@ interesting_seg (annocheck_data *    data,
       if (skip_test (TEST_PROPERTY_NOTE))
 	break;
       /* We return true if we want to examine the note segments.  */
-      return supports_property_notes (per_file.e_machine);
+      return supports_property_notes ();
 
     case PT_LOAD:
       if (! skip_test (TEST_LOAD_SEGMENTS))
@@ -8683,7 +8711,7 @@ check_seg (annocheck_data *    data,
 
       memcpy (entry_bytes, seg->data->d_buf + entry_point, sizeof entry_bytes);
 
-      if (per_file.e_machine == EM_X86_64)
+      if (is_x86_64 ())
 	{
 	  /* Look for ENDBR64: 0xf3 0x0f 0x1e 0xfa.  */
 	  if (   entry_bytes[0] == 0xf3
@@ -8700,7 +8728,7 @@ check_seg (annocheck_data *    data,
 		     entry_bytes[0], entry_bytes[1], entry_bytes[2], entry_bytes[3]);
 	    }
 	}
-      else if (per_file.e_machine == EM_386)
+      else if (is_i686 ())
 	{
 	  /* Look for ENDBR32: 0xf3 0x0f 0x1e 0xfb. */
 	  if (   entry_bytes[0] == 0xf3
@@ -8722,7 +8750,7 @@ check_seg (annocheck_data *    data,
     }
 
   if (seg->phdr->p_type != PT_NOTE
-      || per_file.e_machine != EM_X86_64
+      || ! is_x86_64 ()
       || skip_test (TEST_PROPERTY_NOTE))
     return true;
 
@@ -9029,7 +9057,7 @@ ignore_gap (annocheck_data * data, note_range * gap)
 
      We may not have the symbol table available however so check to see if the gap ends at the
      end of the .text section.  */
-  if (per_file.e_machine == EM_PPC64
+  if (is_ppc64 ()
       && align (gap->end, 8) == align (scn_end, 8)
       && scn_name == per_file.text_section_name_index)
     {
@@ -9152,7 +9180,7 @@ skip_gap_sym (annocheck_data * data, const char * sym)
     }
   per_file.component_name = saved_sym;
 
-  if (per_file.e_machine == EM_X86_64)
+  if (is_x86_64 ())
     {
       /* See BZ 2031133 for example of this happening with RHEL-7 builds.  */
       if (startswith (sym, "deregister_tm_clones"))
@@ -9162,20 +9190,20 @@ skip_gap_sym (annocheck_data * data, const char * sym)
       if (startswith (sym, "call_gmon_start"))
 	return true;
     }
-  else if (per_file.e_machine == EM_AARCH64)
+  else if (is_aarch64 ())
     {
       if (startswith (sym, "_start"))
 	return true;
       if (streq (sym, "_dl_start_user"))
 	return true;
     }
-  else if (per_file.e_machine == EM_386)
+  else if (is_i686 ())
     {
       if (startswith (sym, "__x86.get_pc_thunk")
 	  || startswith (sym, "_x86_indirect_thunk_"))
 	return true;
     }
-  else if (per_file.e_machine == EM_PPC64)
+  else if (is_ppc64 ())
     {
       if (startswith (sym, "_savegpr")
 	  || startswith (sym, "_restgpr")
@@ -9414,7 +9442,7 @@ check_for_gaps (annocheck_data * data)
   /* FIXME: We know that the PPC64 and S390 will put linker generated code at the start and/or
      end of the .text section, so we skip this next test.  Ideally we would have a way to detect
      linker generated code, such as detecting known stub function names...  */
-  if (per_file.e_machine == EM_PPC64 || per_file.e_machine == EM_S390)
+  if (is_ppc64 () || is_s390 ())
     {
       pass (data, TEST_GAPS, SOURCE_ANNOBIN_NOTES, "no gaps found (and linker puts extra code into the .text section)");
       return true;
@@ -9494,7 +9522,7 @@ check_for_gaps (annocheck_data * data)
 
   /* The AArch64 target can insert up to 0x3c bytes of padding...
      cf BZ 1995224.  */
-  if (gap > 0x3c || per_file.e_machine != EM_AARCH64)
+  if (gap > 0x3c || ! is_aarch64 ())
     {
       if (test_enabled (TEST_GAPS))
 	{
@@ -9687,7 +9715,7 @@ finish (annocheck_data * data)
       && ! per_file.build_string_notes_seen
       && test_enabled (TEST_NOTES))
     {
-      if (per_file.e_machine == EM_ARM)
+      if (is_arm ())
 	/* The annobin plugin for gcc is not used when building ARM binaries
 	   because there is an outstanding BZ agains annobin and glibc:
 	   https://bugzilla.redhat.com/show_bug.cgi?id=1951492  */
@@ -9734,7 +9762,7 @@ finish (annocheck_data * data)
 	;
       else if (is_object_file ())
 	skip (data, TEST_GAPS, SOURCE_FINAL_SCAN, "gaps are expected in object files");
-      else if (per_file.e_machine == EM_ARM)
+      else if (is_arm ())
 	skip (data, TEST_GAPS, SOURCE_FINAL_SCAN, "gaps are expected in ARM binaries");
       else if (does_not_contain_code ())
 	skip (data, TEST_GAPS, SOURCE_FINAL_SCAN, "no code detected, therefore gaps are irrelevant");
@@ -9873,7 +9901,7 @@ finish (annocheck_data * data)
 
 	    case TEST_NOT_DYNAMIC_TAGS:
 	    case TEST_DYNAMIC_TAGS:
-	      if (per_file.e_machine != EM_AARCH64)
+	      if (! is_aarch64 ())
 		skip (data, i, SOURCE_FINAL_SCAN, "AArch64 specific");
 	      else if (is_object_file ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not effective in object files");
@@ -9902,7 +9930,7 @@ finish (annocheck_data * data)
 	    case TEST_LTO:
 	      if (GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "at least part of the binary is compield GO");
-	      else if (per_file.e_machine == EM_ARM)
+	      else if (is_arm ())
 		skip (data, i, SOURCE_FINAL_SCAN, "ARM binaries are built without annobin annotation");
 	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
@@ -9945,7 +9973,7 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "BPF binaries are special");
 	      else if (per_file.e_machine == EM_AMDGPU)
 		skip (data, i, SOURCE_FINAL_SCAN, "AMD GPU binaries are special");
-	      else if (per_file.e_machine == EM_ARM)
+	      else if (is_arm ())
 		/* The macros file from redhat-rpm-config explicitly disables the annobin plugin for ARM32
 		   because of the problems reported in https://bugzilla.redhat.com/show_bug.cgi?id=1951492
 		   So until that issue is resolved (if it ever is), we can expect missing notes for ARM32.  */
@@ -9971,7 +9999,7 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "GO binaries are safe without PIC");
 	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
-	      else if (per_file.e_machine == EM_ARM)
+	      else if (is_arm ())
 		skip (data, i, SOURCE_FINAL_SCAN, "ARM binaries are built without annobin annotation");
 	      else if (exception_for_gcc)
 		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
@@ -9996,7 +10024,7 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "GO is stack safe");
 	      else if (LLVM_compiler_used ())
 		skip (data, i, SOURCE_FINAL_SCAN, "sanitize_safe_stack is not currently required for LLVM compilation");
-	      else if (per_file.e_machine == EM_ARM)
+	      else if (is_arm ())
 		skip (data, i, SOURCE_FINAL_SCAN, "ARM binaries are built without annobin annotation");
 	      else if (per_file.lto_used)
 		skip (data, i, SOURCE_FINAL_SCAN, "compiling in LTO mode hides the -fstack-protector-strong option");
@@ -10041,7 +10069,7 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "GO does not need/use this feature");
 	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
-	      else if (per_file.e_machine == EM_ARM)
+	      else if (is_arm ())
 		skip (data, i, SOURCE_FINAL_SCAN, "ARM binaries are built without annobin annotation");
 	      else if (RUST_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "test not relevant to Rust binaries");
@@ -10060,9 +10088,9 @@ finish (annocheck_data * data)
 	      break;
 
 	    case TEST_STACK_CLASH:
-	      if (per_file.e_machine == EM_ARM)
+	      if (is_arm ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not supported on ARM architectures");
-	      else if (per_file.e_machine == EM_RISCV)
+	      else if (is_riscv ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not used on RISC-V architecture");
 	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore no stack protection needed");
@@ -10102,7 +10130,7 @@ finish (annocheck_data * data)
 	    break;
 
 	    case TEST_PROPERTY_NOTE:
-	      if (! supports_property_notes (per_file.e_machine))
+	      if (! supports_property_notes ())
 		skip (data, i, SOURCE_FINAL_SCAN, "property notes do not contain hardening information");
 	      else if (is_object_file ())
 		/* FIXME - we should check object files as well.  */
@@ -10117,7 +10145,7 @@ finish (annocheck_data * data)
 		  else
 		    skip (data, i, SOURCE_FINAL_SCAN, "property notes are not currently supported by Rust binaries");
 		}
-	      else if (per_file.e_machine == EM_AARCH64)
+	      else if (is_aarch64 ())
 		{
 		  if (test_enabled (TEST_BRANCH_PROTECTION))
 		    {
@@ -10210,7 +10238,7 @@ finish (annocheck_data * data)
 
 	    case TEST_NOT_BRANCH_PROTECTION:
 	    case TEST_BRANCH_PROTECTION:
-	      if (per_file.e_machine != EM_AARCH64)
+	      if (! is_aarch64 ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not an AArch64 binary");
 	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore branch protection not needed");
