@@ -82,6 +82,7 @@ gcc_plugin = custom_target(
     gxx,
     '@INPUT@',
     '-g', '-fPIC', '-DPIC', '-shared', '-nostdlib',
+    '-std=c++17', '-Wall', '-Wextra',
     '-DHAVE_CONFIG_H',
     '-I' + join_paths(meson.current_source_dir(), '..'),
     '-I' + join_paths(meson.current_build_dir(), '..'),

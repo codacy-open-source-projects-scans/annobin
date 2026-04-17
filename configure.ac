@@ -12,7 +12,7 @@ AC_CONFIG_SRCDIR([annobin-global.h.in])
 # also update VERSION in the PROJECT section of meson.build.
 # Also note that the number after the decimal point is limited
 # to two digits due to various assumptions in the code.
-ANNOBIN_VERSION=13.09
+ANNOBIN_VERSION=13.10
 AC_SUBST(ANNOBIN_VERSION)
 
 AC_CANONICAL_SYSTEM

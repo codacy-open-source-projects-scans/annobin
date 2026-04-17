@@ -7,7 +7,7 @@
 project(
   'annobin',
   ['c', 'cpp'],
-  version: '13.09',
+  version: '13.10',
   meson_version: '>=0.59'
 )
 

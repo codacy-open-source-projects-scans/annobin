@@ -6,6 +6,7 @@ plugindir = @plugindir@
 plugin_LTLIBRARIES = annobin.la
 
 AM_CPPFLAGS = -I'$(top_builddir)' -I'$(top_srcdir)'
+AM_CXXFLAGS = -std=c++17 -Wall -Wextra -Wpedantic
 AUTOMAKE_OPTIONS = no-dependencies
 
 annobin_la_SOURCES = annobin.cc ../annobin-common.cc

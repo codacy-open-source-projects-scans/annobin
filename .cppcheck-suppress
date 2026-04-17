@@ -1,0 +1,16 @@
+# cppcheck suppressions for Annobin
+# These are intentional patterns that cppcheck flags incorrectly
+
+# Suppress warnings in bundled libiberty code
+*:annocheck/libiberty/*
+
+# GCC plugin interface uses specific patterns
+missingIncludeSystem
+
+# Some intentional unused functions are part of the plugin API
+unusedFunction:gcc-plugin/annobin.cc
+unusedFunction:clang-plugin/annobin.cpp
+unusedFunction:llvm-plugin/annobin.cpp
+
+# False positives for XNEW macro usage
+nullPointerRedundantCheck

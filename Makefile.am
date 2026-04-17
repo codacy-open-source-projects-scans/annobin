@@ -31,7 +31,17 @@ if COND_LLVM
   MAYBE_LLVM = llvm-plugin
 endif
 
-SUBDIRS = $(MAYBE_DOCS) $(MAYBE_GCC) $(MAYBE_CLANG) $(MAYBE_LLVM) $(MAYBE_ANNOCHECK) $(MAYBE_TESTS) 
+SUBDIRS = $(MAYBE_DOCS) $(MAYBE_GCC) $(MAYBE_CLANG) $(MAYBE_LLVM) $(MAYBE_ANNOCHECK) $(MAYBE_TESTS)
 dist_doc_DATA = LICENSE COPYING3
 ACLOCAL_AMFLAGS = -I config
 
+# Code quality targets
+.PHONY: format format-check lint
+
+# Run static analysis with clang-tidy
+lint:
+	@echo "Running clang-tidy static analysis..."
+	@find $(srcdir)/gcc-plugin $(srcdir)/clang-plugin $(srcdir)/llvm-plugin $(srcdir)/annocheck \
+		\( -name "*.cc" -o -name "*.cpp" \) \
+		-not -path "*/libiberty/*" \
+		-exec clang-tidy --config-file $(srcdir)/.clang-tidy {} -- -I. -Igcc-plugin -Iannocheck \;
