@@ -667,7 +667,8 @@ lint:
 	@find $(srcdir)/gcc-plugin $(srcdir)/clang-plugin $(srcdir)/llvm-plugin $(srcdir)/annocheck \
 		\( -name "*.cc" -o -name "*.cpp" \) \
 		-not -path "*/libiberty/*" \
-		-exec clang-tidy --config-file $(srcdir)/.clang-tidy {} -- -I. -Igcc-plugin -Iannocheck \;
+		-exec clang-tidy --config-file $(srcdir)/.clang-tidy {} -- \
+		-I. -Igcc-plugin -Iannocheck -I.. $(CPPFLAGS) \;
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

@@ -9,27 +9,57 @@ Checks: >
   performance-*,
   portability-*,
   readability-*,
+  -bugprone-branch-clone,
   -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
   -cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays,
+  -cppcoreguidelines-avoid-goto,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-init-variables,
+  -cppcoreguidelines-macro-to-enum,
   -cppcoreguidelines-macro-usage,
+  -cppcoreguidelines-no-malloc,
+  -cppcoreguidelines-owning-memory,
   -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
   -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-cstyle-cast,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-use-enum-class,
+  -modernize-avoid-c-arrays,
+  -modernize-macro-to-enum,
   -modernize-redundant-void-arg,
+  -modernize-use-nullptr,
   -modernize-use-trailing-return-type,
   -modernize-use-using,
+  -performance-enum-size,
+  -readability-avoid-const-params-in-decls,
+  -readability-avoid-nested-conditional-operator,
   -readability-avoid-unconditional-preprocessor-if,
   -readability-braces-around-statements,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
   -readability-identifier-naming,
+  -readability-implicit-bool-conversion,
+  -readability-inconsistent-declaration-parameter-name,
   -readability-magic-numbers,
   -readability-named-parameter,
-  -readability-identifier-length,
+  -readability-static-definition-in-anonymous-namespace,
+  -cert-dcl37-c,
+  -cert-dcl50-cpp,
+  -cert-dcl51-cpp,
+  -cert-err33-c,
   -cert-err58-cpp
 
 WarningsAsErrors: ''
 
 HeaderFilterRegex: '.*'
+# It is tempting to use ExcludeHeaderFilterRegex to exlude the
+# system-like header files in the plugin/ directory.  But this
+# has the adverse effect of causing the headers to be ignored
+# entirely, thus leading to bogus warnings about macros not
+# being defined.
 
 CheckOptions:
   - key: modernize-loop-convert.MinConfidence

@@ -91,7 +91,7 @@ static void
 record_stack_realign_note (unsigned int val, annobin_function_info * info)
 {
   annobin_inform (INFORM_VERBOSE, "i686: Record stack realign setting of '%s' for %s",
-		  val ? "false" : "true", get_func_name (info));
+		  val == 0 ? "false" : "true", get_func_name (info));
 
   if (use_string_format ())
     {
@@ -106,7 +106,7 @@ record_stack_realign_note (unsigned int val, annobin_function_info * info)
     }
   else
     {
-      unsigned len = sprintf (annobin_note_buffer, "GA%cstack_realign", val ? BOOL_T : BOOL_F);
+      unsigned len = sprintf (annobin_note_buffer, "GA%cstack_realign", val != 0 ? BOOL_T : BOOL_F);
       
       annobin_output_note (annobin_note_buffer, len + 1, true /* The name is ASCII.  */,
 			   "bool: -mstackrealign status", info);

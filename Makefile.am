@@ -44,4 +44,5 @@ lint:
 	@find $(srcdir)/gcc-plugin $(srcdir)/clang-plugin $(srcdir)/llvm-plugin $(srcdir)/annocheck \
 		\( -name "*.cc" -o -name "*.cpp" \) \
 		-not -path "*/libiberty/*" \
-		-exec clang-tidy --config-file $(srcdir)/.clang-tidy {} -- -I. -Igcc-plugin -Iannocheck \;
+		-exec clang-tidy --config-file $(srcdir)/.clang-tidy {} -- \
+		-I. -Igcc-plugin -Iannocheck -I.. $(CPPFLAGS) \;
