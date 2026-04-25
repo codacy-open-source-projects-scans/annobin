@@ -245,6 +245,7 @@ static struct per_file
   bool         not_branch_protection_pending_pass;
   bool         seen_annobin_plugin_in_dw_at_producer;
   bool         not_seen_annobin_plugin_in_dw_at_producer;
+  bool         seen_aarch64_property_note;
   bool	       seen_bad_dw_at_producer;
   bool         seen_cgo_topofstack_sym;
   bool         seen_crypto_sym;
@@ -6508,6 +6509,8 @@ handle_aarch64_property_note (annocheck_data *      data,
 	return "the BTI property is not enabled";
     }
 
+  per_file.seen_aarch64_property_note = true;
+
   if ((property & GNU_PROPERTY_AARCH64_FEATURE_1_PAC) == 0)
     future_fail (data, TEST_BRANCH_PROTECTION, SOURCE_PROPERTY_NOTES, "The AArch64 PAC property is not enabled");
 
@@ -6589,17 +6592,47 @@ property_note_checker (annocheck_data *     data,
   per_file.property_note_section_seen = true;
 
   if (skip_test (TEST_PROPERTY_NOTE))
-    return true;
+    /* Stop parsing any other notes if we are not intertested in them at all.  */
+    return false;
+
+  /* See if we are interested in notes for this architecture.  */
+  const char * (* handler) (annocheck_data *, annocheck_section *, ulong, ulong, const unsigned char *) = NULL;
+
+  /* Note: the architectures given handlers here should match those in supports_property_notes().  */
+  switch (per_file.e_machine)
+    {
+    case EM_X86_64:
+      handler = handle_x86_64_property_note;
+      break;
+
+    case EM_AARCH64:
+      handler = handle_aarch64_property_note;
+      break;
+
+    default:
+      einfo (VERBOSE2, "%s: WARN: Property notes for architecture %d not handled (yet)",
+	     get_filename (data), per_file.e_machine);
+      /* Fall through.  */
+    case EM_386:
+      /* -fcf-protection has been dropped for x86 as it is not supported by the kernel.
+	 Hence there is no need to check the property notes.  */
+    case EM_PPC64:
+      /* Returning false here stops us from walking any more notes.  */
+      return false;
+    }
+
+  assert (handler != NULL);
 
   if (note->n_type != NT_GNU_PROPERTY_TYPE_0)
     {
       einfo (VERBOSE2, "%s: info: unexpected GNU Property note type %x - ignoring", get_filename (data), note->n_type);
+      /* Return true so that other notes will be scanned.  */
       return true;
     }
 
   if (is_executable ())
     {
-      /* More than one note in an executable is an error.  */
+      /* More than one property note in an executable is an error.  */
       if (already_passed (TEST_PROPERTY_NOTE))
 	{
 	  /* The loader will only process the first note, so having more than one is an error.  */
@@ -6618,6 +6651,7 @@ property_note_checker (annocheck_data *     data,
     }
 
   uint expected_quanta = data->is_32bit ? 4 : 8;
+
   if (note->n_descsz < 8 || (note->n_descsz % expected_quanta) != 0)
     {
       reason = "the property note data has the wrong size";
@@ -6628,39 +6662,14 @@ property_note_checker (annocheck_data *     data,
 
   uint remaining = note->n_descsz;
   const unsigned char * notedata = sec->data->d_buf + data_offset;
+
   if (is_x86 () && remaining == 0)
     {
       reason = "the note section is present but empty";
       goto fail;
     }
 
-  const char * (* handler) (annocheck_data *, annocheck_section *, ulong, ulong, const unsigned char *) = NULL;
-
-  switch (per_file.e_machine)
-    {
-    case EM_X86_64:
-      handler = handle_x86_64_property_note;
-      break;
-
-    case EM_AARCH64:
-      handler = handle_aarch64_property_note;
-      break;
-
-    case EM_386:
-      /* -fcf-protection has been dropped for x86 as it is not supported by the kernel.
-	 Hence there is no need to check the property notes.  */
-    case EM_PPC64:
-      return NULL;
-
-    default:
-      einfo (VERBOSE2, "%s: WARN: Property notes for architecture %d not handled (yet)",
-	     get_filename (data), per_file.e_machine);
-      return NULL;
-    }
-
-  assert (handler != NULL);
-
-  while (remaining)
+  while (remaining > 8)
     {
       ulong type = get_4byte_value (notedata);
       ulong size = get_4byte_value (notedata + 4);
@@ -6680,6 +6689,14 @@ property_note_checker (annocheck_data *     data,
 
       notedata  += ((size + (expected_quanta - 1)) & ~ (expected_quanta - 1));
       remaining -= ((size + (expected_quanta - 1)) & ~ (expected_quanta - 1));
+    }
+
+  if (remaining > 0)
+    {
+      reason = "the property note data is truncated";
+      einfo (VERBOSE2, "debug: note starts at offset %lx but only has %u bytes remaining",
+	     (long)(notedata - (const unsigned char *) sec->data->d_buf), remaining);
+      goto fail;
     }
 
   /* Do not complain about a missing CET note yet - there may be a .note.go.buildid
@@ -9907,19 +9924,25 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "not effective in object files");
 	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore test not needed");
-	      else if (i == TEST_DYNAMIC_TAGS && GO_compiler_seen ())
-		skip (data, i, SOURCE_FINAL_SCAN, "GO compilation does not support branch protection");
-	      else if (i == TEST_DYNAMIC_TAGS && RUST_compiler_seen ())
+	      else if (i == TEST_DYNAMIC_TAGS)
 		{
-		  if (C_compiler_seen ())
-		    /* FIXME - should this be a future fail ?  */
-		    skip (data, i, SOURCE_FINAL_SCAN, "mixed Rust and C code - branch protection is needed but not yet supported by Rust");
-		  else
-		    skip (data, i, SOURCE_FINAL_SCAN, "Rust compilation does not support branch protection");
+		  if (per_file.seen_aarch64_property_note)
+		    skip (data, i, SOURCE_FINAL_SCAN, "an AArch64 property note eliminates the need for dynamic tags");
+		  else if (GO_compiler_seen ())
+		    skip (data, i, SOURCE_FINAL_SCAN, "GO compilation does not support branch protection");
+		  else if (RUST_compiler_seen ())
+		    {
+		      if (C_compiler_seen ())
+			/* FIXME - should this be a future fail ?  */
+			skip (data, i, SOURCE_FINAL_SCAN, "mixed Rust and C code - branch protection is needed but not yet supported by Rust");
+		      else
+			skip (data, i, SOURCE_FINAL_SCAN, "Rust compilation does not support branch protection");
+		    }
+		  else if (exception_for_gcc)
+		    skip (data, i, SOURCE_FINAL_SCAN, "some gcc binaries do not support branch protection");
+		  else if (! test_enabled (TEST_PROPERTY_NOTE))
+		    maybe (data, i, SOURCE_FINAL_SCAN, "the needed tags might be in a GNU property note, but this was not tested");
 		}
-	      else if (i == TEST_DYNAMIC_TAGS && exception_for_gcc)
-		/* FIXME: Is this safe ?  */
-		skip (data, i, SOURCE_FINAL_SCAN, "Some gcc binaries do not support branch protection");
 	      else
 		{
 		  fail (data, TEST_DYNAMIC_TAGS, SOURCE_FINAL_SCAN, "no dynamic tags found");

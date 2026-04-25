@@ -310,10 +310,15 @@ afinfo (einfo_type type, const char * filename, const char * format, ...)
 
 /* -------------------------------------------------------------------- */
 
-/* Utility function to walk over a note section calling FUNC
-   on each note.  PTR is passed to FUNC along with a pointer to the note.
+/* Utility function to walk over a note section calling FUNC on each note.
+   PTR is passed to FUNC along with a pointer to the note.
    If FUNC returns false the walk is terminated.
-   Returns FALSE if the walk could not be executed.  */
+   Returns FALSE if the walk could not be executed at all, otherwise returns TRUE.
+   
+   A FALSE return from FUNC does not mean that the execution has failed,
+   hence there is no way to know if a TRUE result from this function is
+   because the walk covered every note, or because a handler did not like
+   a particular note.  */
 
 bool
 annocheck_walk_notes (annocheck_data * data, annocheck_section * sec, note_walker func, void * ptr)
@@ -325,9 +330,8 @@ annocheck_walk_notes (annocheck_data * data, annocheck_section * sec, note_walke
       || sec->data->d_size == 0)
     return false;
 
-  size_t offset = 0;
-
   GElf_Nhdr  note;
+  size_t     offset = 0;
   size_t     name_offset;
   size_t     data_offset;
 
@@ -557,6 +561,17 @@ itoa (uint lev)
     }
 }
 
+/* Reject any path that contains characters that could compromise the system() function call.  */
+
+static bool
+is_safe_path (const char * path)
+{
+  if (path == NULL)
+    return true;
+
+  return strchr (path, '"') == NULL;
+}
+
 static bool
 process_rpm_file (const char * filename)
 {
@@ -586,6 +601,17 @@ process_rpm_file (const char * filename)
     pname = concat (cwd, "/", full_progname, NULL);
   else
     pname = concat (full_progname, NULL);
+
+  /* Paranoia: Check that the pathnames we are about to supply to system()
+     do not contain characters that would break out of the shell and allow
+     arbitrary commands to be run.  */
+  if (! is_safe_path (dirname)
+      || ! is_safe_path (fname)
+      || ! is_safe_path (pname)
+      || ! is_safe_path (filename)
+      || ! is_safe_path (tmpdir)
+      || ! is_safe_path (saved_args))
+    return afinfo (WARN, filename, "Suspicious character(s) in paths");
 
   command = concat (/* Change into the temporary directory.  */
 		    "cd ", dirname,
@@ -670,6 +696,10 @@ extract_rpm_into_dir (const char * rpm, const char * dirname)
       return false;
     }
 
+  /* This should never happen, but better safe than sorry.  */
+  if (! is_safe_path (dirname) || ! is_safe_path (fname))
+    return afinfo (WARN, NULL, "Suspicious characeter(s) in paths");
+
   char * command;
   command = concat (/* Change into the temporary directory.  */
 		    "cd ", dirname,
@@ -747,6 +777,16 @@ extract_debug_rpm_files (void)
 
       char * cwd = getcwd (NULL, 0);
       const char * tmp = concat ("--debug-dir=", cwd, "/", tmp_debug_dir, NULL);
+
+      /* This should never happen, but let's be paranoid.  */
+      if (! is_safe_path (tmp))
+	{
+	  afinfo (ERROR, tmp, "Path to temporary debug dir contains suspicious characters");
+	  free ((void *) tmp_debug_dir);
+	  free ((void *) tmp);
+	  free ((void *) cwd);
+	  return NULL;
+	}
       save_arg (tmp);
       free ((void *) tmp);
       free ((void *) cwd);
@@ -770,7 +810,10 @@ extract_debug_rpm_files (void)
       if (using_tmpdir)
 	{
 	  char * command = concat ("rm -fr ", debug_dir, NULL);
-	  if (system (command))
+
+	  if (! is_safe_path (debug_dir))
+	    afinfo (WARN, debug_dir, "Contains suspicious character(s)");
+	  else if (system (command))
 	    afinfo (WARN, debug_dir, "Failed to delete temporary directory");
 	  free (command);
 	  free ((void *) debug_dir);
@@ -2627,7 +2670,7 @@ typedef enum file_option
   Debug_file
 } file_option;
 
-static void
+static bool
 save_file_arg (const char * parameter, file_option updating)
 {
   if (parameter[0] != '/')
@@ -2651,6 +2694,12 @@ save_file_arg (const char * parameter, file_option updating)
     }
   else
     parameter = strdup (parameter);
+
+  if (! is_safe_path (parameter))
+    {
+      free ((void *) parameter);
+      return false;
+    }
 
   const char * tmp = NULL;
 
@@ -2684,6 +2733,7 @@ save_file_arg (const char * parameter, file_option updating)
     }
 
   free ((void *) parameter);
+  return true;
 }
 
 /* Handle command line options.
@@ -2811,7 +2861,8 @@ process_command_line (uint argc, const char * argv[])
 	  if (parameter == NULL || parameter[0] == 0)
 	    goto arg_missing_argument;
 
-	  save_file_arg (parameter, updating);
+	  if (! save_file_arg (parameter, updating))
+	    afinfo (WARN, parameter, "Unable to save in argument list");
 
 	  if (debug_dir != NULL && debug_rpm_list != NULL)
 	    {
@@ -2993,15 +3044,15 @@ process_command_line (uint argc, const char * argv[])
 	  struct stat statbuf;
 	  char * test = xmalloc (strlen (files[0]) + strlen (extension) + 1);
 
-	  sprintf (test, "%.*s%s%s", (int) (dash - files[0]) + 1, files[0], extension, dash+1);
+	  sprintf (test, "%.*s%s%s", (int) (dash - files[0]) + 1, files[0], extension, dash + 1);
 
 	  afinfo (VERBOSE2, test, "Possible associated debuginfo rpm");
 
-	  if (stat (test, & statbuf) == 0 && S_ISREG (statbuf.st_mode))
+	  if (is_safe_path (test)
+	      && stat (test, & statbuf) == 0 && S_ISREG (statbuf.st_mode))
 	    {
-	      save_file_arg (test, Debug_rpm);
-
-	      add_file_to_list (test, & debug_rpm_list);
+	      if (save_file_arg (test, Debug_rpm))
+		add_file_to_list (test, & debug_rpm_list);
 	    }
 
 	  free (test);
@@ -3099,7 +3150,10 @@ main (int argc, const char ** argv)
       && (debug_rpm_dir != debug_dir || const_strneq (debug_dir, ANNOCHECK_TMP_DEBUGINFO_DIR)))
     {
       char * command = concat ("rm -fr ", debug_rpm_dir, NULL);
-      if (system (command))
+
+      if (! is_safe_path (debug_rpm_dir))
+	afinfo (WARN, debug_rpm_dir, "Contains suspicious characters");
+      else if (system (command))
 	afinfo (WARN, debug_rpm_dir, "Failed to delete temporary directory");
       free (command);
     }
