@@ -21,7 +21,7 @@ rm -fr annobin-$version annobin-gcc-plugin-$version annobin-$version.tar.xz anno
 
 cp -r $SRCDIR annobin-$version
 cd annobin-$version
-rm -fr .git autom4te.cache .vscode .gitignore
+rm -fr .git autom4te.cache .vscode .gitignore .claude
 
 sleep 1
 touch aclocal.m4 gcc-plugin/config.h.in
