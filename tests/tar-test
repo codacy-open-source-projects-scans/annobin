@@ -1,0 +1,165 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck can process TAR archives.
+
+TEST_NAME=tar
+. $srcdir/common.sh
+
+# Before we start, make sure that tar and xz are installed.
+if ! command -v "$TAR" >/dev/null 2>&1; then
+    echo " $TEST_NAME: SKIP: the archiver '$TAR' not installed"
+    exit $EXIT_TEST_SKIPPED
+fi
+
+if ! command -v "$XZ" >/dev/null 2>&1; then
+    echo " $TEST_NAME: SKIP: the compressor '$XZ' not installed"
+    exit $EXIT_TEST_SKIPPED
+fi
+
+start_test
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+
+# Compile several object files with the annobin plugin
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello_lib.c > $G_OUT 2>&1
+
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test files"
+    echo " $TEST_NAME: compiler output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# ----------------------------------------------------------------
+# Test 1: Create a tarball and check that annocheck can process it
+# ----------------------------------------------------------------
+
+ARCHIVE=test.tar
+COMMAND="$TAR cf $ARCHIVE hello.o hello2.o hello3.o hello_lib.o"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to create tar file"
+    echo " $TEST_NAME: command: $COMMAND"
+    echo " $TEST_NAME: output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+A_OPTS="--ignore-gaps --suppress-version-warnings --skip-lto --skip-cf-protection --verbose"
+$ANNOCHECK $ARCHIVE $A_OPTS > $A_OUT 2>&1
+
+exit_code=$?
+if [ $exit_code -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed or errored (exit code $exit_code) on tar file"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# Verify annocheck actually examined the tarball's members
+# At this point we are not really worried if the tests PASSed or FAILed.
+# FIXME: We should count the number of PASS/FAIL results.
+grep -q -e "PASS\|FAIL:\|MAYB:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck produced no test results for tarball"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck processed a multi-member tarball file"
+
+# -----------------------------------------------------
+# Test 2: The output should show the tarball's filename
+# -----------------------------------------------------
+
+grep -q "$ARCHIVE:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck verbose output does not reference tarball filename"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck verbose output references tarball filename"
+
+# ---------------------------------------------------------
+# Test 3: Repeat the previous tests on a compressed tarball
+# ---------------------------------------------------------
+
+COMMAND="$XZ -9 $ARCHIVE"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compress tarball"
+    echo " $TEST_NAME: command: $COMMAND"
+    echo " $TEST_NAME: output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+ARCHIVE="$ARCHIVE.xz"
+
+$ANNOCHECK $ARCHIVE $A_OPTS > $A_OUT 2>&1
+
+exit_code=$?
+if [ $exit_code -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed or errored (exit code $exit_code) on compressed tarball"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# Verify annocheck actually examined the tarball's members
+# At this point we are not really worried if the tests PASSed or FAILed.
+# FIXME: We should count the number of PASS/FAIL results.
+grep -q -e "PASS\|FAIL:\|MAYB:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck produced no test results for compressed tarball"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck processed a multi-member compressed tarball file"
+
+grep -q "$ARCHIVE:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck verbose output does not reference compressed tarball filename"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck verbose output references compressed tarball filename"

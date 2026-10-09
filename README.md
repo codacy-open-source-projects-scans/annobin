@@ -63,3 +63,7 @@ to this project as well:
 
   https://sourceware.org/binutils/code-of-conduct/Code-of-Conduct.html
 
+## Security
+
+A description of the project's position on security related bug
+reports can be found in the SECURITY.md document.

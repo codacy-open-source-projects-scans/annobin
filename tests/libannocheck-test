@@ -23,34 +23,38 @@ INCDIR=${INCDIR:-../../annocheck}
 OPTS="-O2 -I $INCDIR"
 
 COMMAND="$GCC $OPTS -c $srcdir/use-libannocheck.c"
-$COMMAND
+$COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
-	echo " $TEST_NAME: FAIL: Could not compile source file"
+	echo " $TEST_NAME: SKIP: Could not compile source file"
 	echo " $TEST_NAME: command: $COMMAND"
+	cat $G_OUT
 	end_test
-	exit 1
+	exit $EXIT_TEST_SKIPPED
 fi
 
 COMMAND="$GCC use-libannocheck.o -L $LIBANNOCHECKDIR -lannocheck -o use-libannocheck -lelf -ldw -Wl,-rpath=$LIBANNOCHECKDIR -Wl,-z,now"
-$COMMAND
+$COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
-	echo " $TEST_NAME: FAIL: Could not link source file"
+	echo " $TEST_NAME: SKIP: Could not link source file"
 	echo " $TEST_NAME: command: $COMMAND"
+	cat $G_OUT
 	end_test
-	exit 1
+	exit $EXIT_TEST_SKIPPED
 fi
-
-echo " $TEST_NAME: Running first test - expecting EXIT_SUCCESS"
 
 ./use-libannocheck > libannocheck.out
 if [ $? != 0 ];
 then
 	echo " $TEST_NAME: FAIL: libannocheck tester returned FAIL exit code"
 	end_test
-	exit 1
+	exit $EXIT_TEST_FAILED
 fi
+
+echo " $TEST_NAME: PASS: libannocheck tester returned SUCCESS exit code"
+
+#-------------------------------------------------------------------------
 
 COMMAND="$GCC use-libannocheck.o -L $LIBANNOCHECKDIR -lannocheck -o use-libannocheck -lelf -ldw -Wl,-rpath=$LIBANNOCHECKDIR -Wl,-z,lazy"
 $COMMAND
@@ -59,17 +63,17 @@ then
 	echo " $TEST_NAME: FAIL: Could not link source file (second version)"
 	echo " $TEST_NAME: command: $COMMAND"
 	end_test
-	exit 1
+	exit $EXIT_TEST_FAILED
 fi
-
-echo " $TEST_NAME: Running second test - expecting EXIT_FAILURE"
 
 ./use-libannocheck > libannocheck.out
 if [ $? == 0 ];
 then
 	echo " $TEST_NAME: FAIL: libannocheck tester returned PASS exit code for a failing binary"
 	end_test
-	exit 1
+	exit $EXIT_TEST_FAILED
 fi
+
+echo " $TEST_NAME: PASS: libannocheck tester FAILed a bad binary"
 
 end_test

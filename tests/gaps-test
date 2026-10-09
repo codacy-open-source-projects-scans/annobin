@@ -38,30 +38,32 @@ start_test
 
 # Compile source code.
 
-COMMAND="$GCC $OPTS $srcdir/main.c -o main.exe"
-$COMMAND
+COMMAND="$GCC $OPTS $srcdir/main.c -o $EXE"
+$COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
-    echo " $TEST_NAME: FAIL: unable to compile test file"
+    echo " $TEST_NAME: SKIP: unable to compile test file"
     echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_SKIPPED
 fi
 
 # Run annocheck.
 
-SKIPS="--skip-cf-protection --skip-property-note --skip-stack-realign --skip-entry --skip-dynamic-tags --skip-lto --skip-fortify --skip-warnings --skip-dynamic-tags --skip-not-dynamic-tags --skip-branch-protection --skip-not-branch-protection --suppress-version-warnings"
-$ANNOCHECK main.exe $SKIPS > main.out
-grep -e "PASS" main.out
+SKIPS="--skip-cf-protection --skip-property-note --skip-stack-realign --skip-entry --skip-dynamic-tags --skip-lto --skip-fortify --skip-warnings --skip-not-dynamic-tags --skip-branch-protection --skip-not-branch-protection --suppress-version-warnings"
+A_COMMAND="$ANNOCHECK $EXE $SKIPS"
+$A_COMMAND > $A_OUT
+grep -q -e"PASS" $A_OUT
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: FAIL: using rpm build macros did not produce an executable that passes annocheck"
-    echo " $TEST_NAME: compile command: $GCC $OPTS $srcdir/main.c -o main.exe"
-    echo " $TEST_NAME: annocheck command: $ANNOCHECK main.exe $SKIPS"
+    echo " $TEST_NAME: compile command: $COMMAND"
+    echo " $TEST_NAME: annocheck command: $A_COMMAND"
     echo " $TEST_NAME: annocheck output (with verbose and notes enabled):"
-    $ANNOCHECK main.exe $SKIPS --verbose --enable-notes
+    $ANNOCHECK $EXE $SKIPS --verbose --enable-notes
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
 end_test

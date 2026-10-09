@@ -1,0 +1,108 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck detects RWX LOAD segments via --test-load-segments
+
+TEST_NAME=load-segments
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+
+start_test
+
+# Compile test object files
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello_lib.c
+
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test files"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+SKIPS="--skip-all --test-load-segments --suppress-version-warnings"
+A_OUT=load-segments-test.out
+
+# Part 1: Link normally - LOAD segments should be well-formed (no RWX) - should PASS
+EXE=load-segments-pass.exe
+
+$GCC hello.o hello2.o hello3.o hello_lib.o -pie -Wl,-z,now,-z,relro -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link test executable"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+A_COMMAND="$ANNOCHECK $EXE $SKIPS --verbose"
+$A_COMMAND > $A_OUT
+
+grep -q -e"FAIL: load-segments test" $A_OUT
+if [ $? == 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck reported bad LOAD segments for a normally linked binary"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck correctly passed a binary with well-formed LOAD segments"
+
+#------------------------------------------------------------------------------------
+
+# Part 2: Create a shared library with RWX LOAD segment using -Wl,-N (OMAGIC)
+# This merges text and data into a single writable+executable segment.
+EXE=load-segments-fail.so
+
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC $srcdir/hello_lib.c
+$GCC -nostdlib -shared hello_lib.o -Wl,-N -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to create shared library with -Wl,-N (OMAGIC)"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Verify the RWX LOAD segment is actually present
+$READELF -l $EXE 2>/dev/null | grep -q "RWE"
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: linked binary does not contain an RWX LOAD segment"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+A_COMMAND="$ANNOCHECK $EXE $SKIPS --verbose"
+$A_COMMAND > $A_OUT
+
+grep -q -e"FAIL: load-segments test" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not detect RWX LOAD segment"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck detected RWX LOAD segment"
+
+end_test

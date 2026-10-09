@@ -13,6 +13,7 @@ cxx.find_library('LLVM')
 llvm_plugin = custom_target(
   'annobin-for-llvm.so',
   input: ['annobin.cpp', '../annobin-common.cc'],
+  depend_files: ['../AnnobinLLVMCommon.h'],
   output: 'annobin-for-llvm.so',
   install: true,
   install_dir: install_dir,
@@ -29,6 +30,7 @@ llvm_plugin = custom_target(
     '-D_GLIBCXX_ASSERTIONS',
     '-shared',
     '-fPIC',
+    '-fexceptions',
     '-Wall',
     '-O2',
     '-flto',

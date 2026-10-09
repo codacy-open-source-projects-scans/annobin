@@ -15,6 +15,7 @@ tests = [
   'instrumentation',
   'ldconfig',
   'missing-notes',
+  'mixed-language',
   'property-note',
   'section-size',
 ]
@@ -33,17 +34,41 @@ if get_option('annocheck')
   }
 
   tests += [
+    'archive',
+    'assembler-gap',
     'atexit',
+    'bind-now',
     'fast',
     'fortify',
-    'assembler-gap',
-    'libannocheck',
+    'future',
+    'gaps',
     'glibc-notes',
+    'glibcxx',
+    'gnu-stack',
+    'go-fips',
+    'illegal',
+    'implicit-values',
+    'libannocheck',
+    'load-segments',
     'lto',
     'objcopy',
-    'unicode',
+    'pie',
+    'production',
+    'profile',
+    'relro',
+    'rhivos',
+    'run-path',
+    'short-enums',
+    'stack-clash',
     'stat',
-    'gaps',
+    'static-link',
+    'strip',
+    'tar',
+    'textrel',
+    'threads',
+    'unicode',
+    'warnings',
+    'zip',
   ]
 
   if have_debuginfod
@@ -56,15 +81,17 @@ endif
 
 if get_option('llvm-plugin')
   env += {'LLVM_PLUGIN' : llvm_plugin.full_path()}
-  tests += ['llvm']
+  tests += 'llvm'
 endif
 
 if get_option('clang-plugin')
   env += {'CLANG_PLUGIN' : clang_plugin.full_path()}
-  tests += ['clang']
+  tests += 'clang'
 endif
 
+## Running the tests in parallel often results in some
+## of them timing out.  I have no idea why.
 foreach testname : tests
   prog = find_program(testname + '-test')
-  test(testname, prog, env: env)
+  test(testname, prog, env: env, is_parallel : false)
 endforeach

@@ -59,8 +59,8 @@ foo_ifunc (void)
   return foo_impl;
 }
 
-extern int bar (int);
-extern int baz (int) __attribute__((cold));
+extern int barer (int);
+extern int bazer (int) __attribute__((cold));
 
 void coldy (int) __attribute__((optimize("-O3"),__noinline__));
 
@@ -68,18 +68,19 @@ void
 coldy (int x)
 {
   if (x)
-    bar (bar (5));
+    barer (barer (5));
   else
-    baz (baz (baz (baz (12))));
+    bazer (bazer (bazer (bazer (12))));
 }
 
+void colder (int) __attribute__((cold));
 void
 colder (int x)
 {
   if (x)
-    bar (bar (7));
+    barer (barer (7));
   else
-    baz (baz (baz (baz (13))));
+    bazer (bazer (bazer (bazer (13))));
 }
 
 void * func_in_its_own_section (void) __attribute__((optimize("-O3"),section(".mysection"),__noinline__));

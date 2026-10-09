@@ -29,7 +29,7 @@
 /* Accessing the global_options structure is only permitted via annobin's version.  */
 #undef  global_options
 struct gcc_options * annobin_global_options = & global_options;
-#define global_options ANNOBIN_ILLEGAL_GLOBAL_OPTIONS       
+#define global_options ANNOBIN_ILLEGAL_GLOBAL_OPTIONS
 
 /* Version number.  */
 #define xstr(s) str(s)
@@ -212,7 +212,7 @@ in_lto (void)
 
   return GET_INT_OPTION_BY_NAME (in_lto_p) == 1;
 }
-    
+
 /* Determine the (main) input file name.  */
 
 static bool
@@ -225,7 +225,7 @@ init_annobin_input_filename (void)
      however we must ensure that we use a fixed name.  */
   if (in_lto ())
     f = ANNOBIN_LTO_FIXED_NAME;
-     
+
   /* Unfortunately we cannot rely upon 'main_input_filename' since
      if the input is preprocessed, this will have been set to the
      original un-preprocessed filename (foo.c) based upon the
@@ -299,7 +299,7 @@ init_annobin_output_filesym (void)
 	 append the time to the symbol name.  This will of course break
 	 the functionality of build-ids.  That is why this option is off
 	 by default.  */
-      struct timeval tv;
+      struct timeval tv = {0,0};
 
       if (gettimeofday (& tv, NULL))
 	{
@@ -351,7 +351,7 @@ annobin_output_string_note (const char * note)
      silently discard any string table that is not indexed by another section.  */
   fprintf (asm_out_file, "\t.pushsection %s,\"MS\",%%1,1\n", ANNOBIN_STRING_SECTION_NAME);
   fprintf (asm_out_file, "\t.asciz \"%s\"\n", note);
-  fprintf (asm_out_file, "\t.popsection\n");  
+  fprintf (asm_out_file, "\t.popsection\n");
 }
 
 /* Create the assembler source necessary to build a single ELF Note structure.  */
@@ -403,7 +403,7 @@ annobin_output_note (const char *             name,
 	ice ("unable to generate annobin note: name string does not match name size");
 
       sprintf (buffer1, ".dc.l %u", namesz);
-      sprintf (buffer2 , "namesz [= strlen (%s)]", name);
+      snprintf (buffer2, sizeof buffer2, "namesz [= strlen (%s)]", name);
       annobin_emit_asm (buffer1, buffer2);
     }
   else
@@ -481,7 +481,7 @@ annobin_output_note (const char *             name,
 	     biased in order to avoid conflicting with the function
 	     name symbol for the first function in the file.  So reverse
 	     that bias here.  */
-	  if (info->start_sym == annobin_output_filesym)
+	  if (streq (info->start_sym, annobin_output_filesym))
 	    fprintf (asm_out_file, "- %d", target_start_sym_bias);
 	}
 
@@ -532,7 +532,7 @@ annobin_gen_string_note (annobin_function_info *  info,
 
   dst[0] = 0;  // Paranoia - in case 'format' does not place any characters into the string.
   va_start (args, format);
-  vsprintf (dst, format, args);
+  vsnprintf (dst, sizeof annobin_note_buffer, format, args);
   va_end (args);
 
   if (use_extended_string)
@@ -546,7 +546,7 @@ annobin_gen_string_note (annobin_function_info *  info,
 	      return;
 	    }
 	}
-	
+
       size_t len = strlen (dst) + 1 + strlen (annobin_input_filename);
 
       if (! is_global (info))
@@ -693,10 +693,10 @@ annobin_remap (unsigned int cl_option_index)
      the index. */
   static struct cl_index_remap
   {
-    bool          checked;
     const char *  option_name;
     size_t        original_index;
     unsigned int  real_index;
+    bool          checked;
     bool          has_flag;
   }
   cl_remap [] =
@@ -704,8 +704,8 @@ annobin_remap (unsigned int cl_option_index)
     /* This is an array of the options that we know annobin wants to
        access and for which there are entries in the cl_options array.  */
 #define MAKE_ENTRY(opt_name, opt_num) \
-    { false, opt_name, opt_num, 0, true }
-   
+    { opt_name, opt_num, 0, false, true }
+
 #ifdef flag_stack_clash_protection
     MAKE_ENTRY ("-fstack-clash-protection", OPT_fstack_clash_protection),
 #endif
@@ -725,7 +725,7 @@ annobin_remap (unsigned int cl_option_index)
     MAKE_ENTRY ("-finstrument-functions", OPT_finstrument_functions),
     MAKE_ENTRY ("-fprofile", OPT_fprofile),
     MAKE_ENTRY ("-fprofile-arcs", OPT_fprofile_arcs),
-    { false, "--all-warnings", OPT_Wall, 0, false }
+    { "--all-warnings", OPT_Wall, 0, false, false }
   };
 
   int i;
@@ -792,7 +792,7 @@ annobin_remap (unsigned int cl_option_index)
 
   if (cl_remap[i].has_flag)
     {
-      void * flag = option_flag_var (cl_option_index, annobin_global_options);
+      void * flag = option_flag_var ((int) cl_option_index, annobin_global_options);
 
       if (flag == NULL)
 	{
@@ -827,7 +827,7 @@ annobin_get_int_option_by_index (unsigned int cl_option_index)
       return -1;
     }
 
-  void * flag = option_flag_var (cl_option_index, annobin_global_options);
+  void * flag = option_flag_var ((int) cl_option_index, annobin_global_options);
 
   const struct cl_option * option = cl_options + cl_option_index;
 
@@ -884,7 +884,7 @@ annobin_get_str_option_by_index (unsigned int cl_option_index)
       return NULL;
     }
 
-  void * flag = option_flag_var (cl_option_index, annobin_global_options);
+  void * flag = option_flag_var ((int) cl_option_index, annobin_global_options);
 
   enum cl_var_type var_type = cl_options[cl_option_index].var_type;
 
@@ -946,6 +946,7 @@ static unsigned int
 compute_pic_option (void)
 {
   int val = GET_INT_OPTION_BY_INDEX (OPT_fpie);
+
   if (val > 1)
     return 4;
   if (val != 0)
@@ -974,46 +975,11 @@ annobin_get_optimize_debug (void)
 /* Compute a numeric value representing the settings/levels of
    the -O and -g options, and some -W options.  This is to help
    verify the recommended hardening options for binaries.
-   The format of the number is as follows:
+   The bitfield are defined in annobin-global.h.  */
 
-   bits  0, 2 : debug type (from enum debug_info_type)
-   bit   3      : with GNU extensions
-   bits  4, 5 : debug level (from enum debug_info_levels)
-   bits  6, 8 : DWARF version level
-   bits  9,10 : optimization level
-   bit  11    : -Os
-   bit  12    : -Ofast
-   bit  13    : -Og
-   bit  14    : -Wall
-   bit  15    : -Wformat-security
-   bit  16    : LTO enabled
-   bit  17    : LTO disabled.
-   bits 18,19 : -ftrivial-auto-var-init
-                  0 -> not supported by the compiler
-		  1 -> supported but not used or set to 'uninitialized'
-		  2 -> set to 'pattern' (which is bad for production binaries)
-		  3 -> set to 'zero'
-   bits 20,21 : -fzero-call-used-regs
-                  0 -> not supported by the compiler
-		  1 -> supported but not used or set to 'skip'
-		  2 -> not used.
-		  3 -> supported and set to some class(es) of call used registers,
-   bits 22,23 : -Wimplicit-int
-                  0 -> not recorded by annocheck plugin
-		  1 -> recorded by annocheck, option not enabled
-		  2 -> recorded by annocheck, option has "default" value.
-		  3 -> recorded by annocheck, option enabled
-   bits 24,25 : -Wimplicit-function-declaration
-                  0 -> not recorded by annocheck plugin
-		  1 -> recorded by annocheck, option not enabled
-		  2 -> recorded by annocheck, option has "default" value.
-		  3 -> recorded by annocheck, option enabled
-   bit 26     : flex array bits in use
-       27     : -Wstrict-flex-arrays
-       28     : -fstrict-flex-arrays > 0
-
-   bits 29..31: Not currently used.  Should be zero.
-*/
+#ifndef DINFO_TYPE_MAX
+#define DINFO_TYPE_MAX 3
+#endif
 
 static unsigned int
 compute_GOWall_options (void)
@@ -1023,67 +989,72 @@ compute_GOWall_options (void)
 
   /* FIXME: Keep in sync with changes to gcc/flag-types.h:enum debug_info_type.  */
   val = GET_INT_OPTION_BY_NAME (write_symbols);
-  if (val > VMS_AND_DWARF2_DEBUG)
+  /* FIXME: we only have 3 bits to record the debug type, but gcc supports 6...  */
+  if (val > DINFO_TYPE_MAX || val > GOW_BITMASK_DEBUG_TYPE)
     {
-      annobin_inform (INFORM_VERBOSE, "unknown debug info type (%d)", val);
+      annobin_inform (INFORM_VERBOSE, "unsupported debug info type (%#x)", val);
       val = 0;
     }
 
 #if GCCPLUGIN_VERSION_MAJOR < 13
   if (GET_INT_OPTION_BY_NAME (use_gnu_debug_info_extensions))
-    val |= (1 << 3);
+    val |= GOW_BIT_DEBUG_GNU;
 #endif
 
   i = GET_INT_OPTION_BY_NAME (debug_info_level);
-  if (i > DINFO_LEVEL_VERBOSE)
-    annobin_inform (INFORM_VERBOSE, "unexpected debug_info_level = %d", i);
+  if (i > DINFO_LEVEL_VERBOSE || i > GOW_BITMASK_DEBUG_LEVEL)
+    annobin_inform (INFORM_VERBOSE, "unexpected debug_info_level = %u", i);
   else
-    val |= (i << 4);
+    val |= (i << GOW_BITSTART_DEBUG_LEVEL);
 
   i = GET_INT_OPTION_BY_NAME (dwarf_version);
-  if (i < 2)
+  if (i < 2 || i == -1U)
     {
       /* Apparently it is possible for dwarf_version to be -1.  Not sure how
 	 this can happen, but handle it anyway.  Since DWARF prior to v2 is
 	 deprecated, we use 2 as the version level.  */
-      val |= (2 << 6);
       annobin_inform (INFORM_VERBOSE, "dwarf version level %d recorded as 2", i);
+      i = 2;
     }
-  else if (i > 7)
+  else if (i > GOW_BITMASK_DWARF_LEVEL)
     {
       /* FIXME: We only have 3 bits to record the debug level...  */
-      val |= (7 << 6);
-      annobin_inform (INFORM_VERBOSE, "dwarf version level %d recorded as 7", i);
+      i = GOW_BITMASK_DWARF_LEVEL;
+      annobin_inform (INFORM_VERBOSE, "dwarf version level %u recorded as %u", i, GOW_BITMASK_DWARF_LEVEL);
     }
-  else
-    val |= (i << 6);
 
+  val |= (i << GOW_BITSTART_DWARF_LEVEL);
+  
   i = annobin_get_optimize ();
-  if (i > 3)
-    val |= (3 << 9);
-  else
-    val |= (i << 9);
+  if (i > GOW_BITMASK_OPT_LEVEL)
+    i = GOW_BITMASK_OPT_LEVEL;
+  val |= (i << GOW_BITSTART_OPT_LEVEL);
 
   /* FIXME: It should not be possible to enable more than one of -Os/-Of/-Og,
      so the tests below could be simplified.  */
   if (GET_INT_OPTION_BY_NAME (optimize_size))
-    val |= (1 << 11);
+    val |= GOW_BIT_OS;
 
   if (GET_INT_OPTION_BY_NAME (optimize_fast))
-    val |= (1 << 12);
+    val |= GOW_BIT_OFAST;
 
   if (annobin_get_optimize_debug () != 0)
-    val |= (1 << 13);
+    val |= GOW_BIT_OG;
 
   /* Unfortunately -Wall is not recorded by gcc.  So we have to scan the
      command line...  */
   size_t remaped_wall = annobin_remap (OPT_Wall);
+  if (remaped_wall == 0)
+    remaped_wall = OPT_Wall;
+
   unsigned u;
   for (u = 0; u < save_decoded_options_count; u++)
     {
-      if (save_decoded_options[u].opt_index == remaped_wall)
+      if (save_decoded_options[u].opt_index == remaped_wall
+	  /* FIXME: Sometimes the remapping does not work.  */
+	  || save_decoded_options[u].opt_index == OPT_Wall)
 	{
-	  val |= (1 << 14);
+	  val |= GOW_BIT_WALL;
 	  break;
 	}
     }
@@ -1092,41 +1063,35 @@ compute_GOWall_options (void)
      it is important, and because LTO compilation does not pass on the -Wall
      flag.  FIXME: Add other important warnings.  */
   if (GET_INT_OPTION_BY_NAME (warn_format_security))
-    val |= (1 << 15);
+    val |= GOW_BIT_WFS;
 
   if (in_lto () || GET_STR_OPTION_BY_NAME (flag_lto) != NULL)
-    val |= (1 << 16);
-  else /* We record the negative so that annocheck can detect that
-	  we definitely have recorded something for this feature.  */
-    val |= (1 << 17);
+    val |= GOW_BIT_LTO;
+  else
+    /* We record the negative so that annocheck can detect that
+       we definitely have recorded something for this feature.  */
+    val |= GOW_BIT_NO_LTO;
 
 #ifdef flag_auto_var_init
   switch (GET_INT_OPTION_BY_NAME (flag_auto_var_init))
     {
-    default:
-    case -1: break;
-    case AUTO_INIT_UNINITIALIZED: val |= (1 << 18); break;
-    case AUTO_INIT_PATTERN: val |= (1 << 19); break;
-    case AUTO_INIT_ZERO: val |= (3 << 18); break;
+    default:                       i = 0; break;
+    case AUTO_INIT_UNINITIALIZED:  i = 1; break;
+    case AUTO_INIT_PATTERN:        i = 2; break;
+    case AUTO_INIT_ZERO:           i = 3; break;
     }
+  val |= (i << GOW_BITSTART_AUTO_VAR);
 #endif
 
 #ifdef flag_zero_call_used_regs
   switch (GET_INT_OPTION_BY_NAME (flag_zero_call_used_regs))
     {
-    case -1:
-      /* Flag not found.  */
-      break;
-
+    case -1:                      i = 0; break;      /* Flag not found.  */
     case zero_regs_flags::UNSET:
-    case zero_regs_flags::SKIP:
-      val |= (1 << 20);
-      break;
-
-    default:
-      val |= (3 << 20);
-      break;
+    case zero_regs_flags::SKIP:   i = 1; break;
+    default:                      i = 3; break;
     }
+  val |= (i << GOW_BITSTART_ZERO_CALL);
 #endif
 
   /* 0 means that the warning has been disabled.
@@ -1134,27 +1099,27 @@ compute_GOWall_options (void)
      -1 means that the warning has its "default" value, which is enabled.
      In LTO mode the value is always -1.  */
   if (GET_INT_OPTION_BY_NAME (warn_implicit_int) > 0)
-    val |= (3 << 22);
+    val |= (3 << GOW_BITSTART_IMPLICIT_INT);
   else if (GET_INT_OPTION_BY_NAME (warn_implicit_int) == -1)
-    val |= (2 << 22);
+    val |= (2 << GOW_BITSTART_IMPLICIT_INT);
   else
-    val |= (1 << 22);
+    val |= (1 << GOW_BITSTART_IMPLICIT_INT);
 
   if (GET_INT_OPTION_BY_NAME (warn_implicit_function_declaration) > 0)
-    val |= (3 << 24);
+    val |= (3 << GOW_BITSTART_IMPLICIT_FUNC);
   else if (GET_INT_OPTION_BY_NAME (warn_implicit_function_declaration) == -1)
-    val |= (2 << 24);
+    val |= (2 << GOW_BITSTART_IMPLICIT_FUNC);
   else
-    val |= (1 << 24);
+    val |= (1 << GOW_BITSTART_IMPLICIT_FUNC);
 
 #ifdef flag_strict_flex_arrays
-  val |= (1 << 26);
+  val |= GOW_BIT_FLEX_ARRAY;
 
   if (GET_INT_OPTION_BY_NAME (warn_strict_flex_arrays))
-    val |= (1 << 27);
+    val |= GOW_BIT_WARN_FLEX;
 
   if (GET_INT_OPTION_BY_NAME (flag_strict_flex_arrays) > 0)
-    val |= (1 << 28);  
+    val |= GOW_BIT_STRICT_FLEX;
 #endif
 
   return val;
@@ -1163,22 +1128,26 @@ compute_GOWall_options (void)
 static bool
 is_problematic_gow (unsigned int gow)
 {
-  return gow == -1U
-    || (((gow >>  9) & 3) < 2)    /* Optimization level too low.  */
-    || (((gow >> 14) & 3) == 0)   /* Warnings not enabled.  */
-    || (((gow >> 16) & 3) == 3)   /* Both LTO and non-LTO.  */
-    || (((gow >> 16) & 3) == 2)   /* LTO disabled.  */
+  return gow == -1U                     /* Value not set.  */
+    || (GOW_OPT_LEVEL (gow) < 2)        /* Optimization level too low.  */
+    || (((gow & GOW_BIT_WALL) == 0)
+	&& ((gow & GOW_BIT_WFS) == 0))  /* Warnings not enabled.  */
+    || ((gow & (GOW_BIT_LTO | GOW_BIT_NO_LTO))
+	== (GOW_BIT_LTO | GOW_BIT_NO_LTO)) /* Both LTO and no-LTO enabled.  */
+    || (gow & GOW_BIT_NO_LTO)           /* LTO disabled.  */
 #ifdef flag_auto_var_init
-    || (((gow >> 18) & 3) == 1)   /* Auto var init is not being used.  */
-    || (((gow >> 18) & 3) == 2)   /* Auto var init is set to a pattern.  */
+    || (GOW_AUTO_VAR (gow) == 1)        /* Auto var init is not being used.  */
+    || (GOW_AUTO_VAR (gow) == 2)        /* Auto var init is set to a pattern.  */
 #endif
 #ifdef flag_zero_call_used_regs
-    || (((gow >> 20) & 3) == 1)   /* Call used regs not being cleared.  */
+    || (GOW_ZERO_CALL (gow) == 1)       /* Call used regs not being cleared.  */
 #endif
-    || (((gow >> 22) & 3) == 1)   /* -Wimplicit-int not used.  */
-    || (((gow >> 24) & 3) == 1)   /* -Wimplicit-function-declaration not used.  */
+    || (GOW_IMPLICIT_INT (gow) == 1)    /* -Wimplicit-int not used.  */
+    || (GOW_IMPLICIT_FUNC (gow) == 1)   /* -Wimplicit-function-declaration not used.  */
 #ifdef flag_strict_flex_arrays
-    || (((gow >> 26) & 7) != 7)   /* flexible arrays hardending not used.  */
+    || ((gow & GOW_BIT_FLEX_ARRAY)
+	&& ((gow & GOW_BIT_WARN_FLEX) == 0
+	    || (gow & GOW_BIT_STRICT_FLEX) == 0))  /* Flexible arrays supported but hardending not used.  */
 #endif
     ; /* FIXME: Add other tests as GOW value extends.  */
 }
@@ -1187,11 +1156,12 @@ static void
 record_GOW_note (unsigned int             gow,
 		 annobin_function_info *  info)
 {
-  annobin_inform (INFORM_VERBOSE, "Record status of -g (%d), -O (%d), -Wall (%s) and LTO (%s) for %s",
-		  (gow >> 4) & 3,
-		  (gow >> 9) & 3,
-		  gow & (3 << 14) ? "enabled" : "disabled",
-		  gow & (1 << 16) ? "enabled" : "not enabled",
+  annobin_inform (INFORM_VERBOSE, "Record status of -g (%d), -O (%d), -Wall (%s), -Wformat-security (%s) and LTO (%s) for %s",
+		  GOW_DEBUG_LEVEL (gow),
+		  GOW_OPT_LEVEL (gow),
+		  (gow & GOW_BIT_WALL) != 0 ? "enabled" : "disabled",
+		  (gow & GOW_BIT_WFS) != 0 ? "enabled" : "disabled",
+		  (gow & GOW_BIT_LTO) != 0 ? "enabled" : "not enabled",
 		  get_func_name (info));
 
   if (use_string_format ())
@@ -1201,7 +1171,7 @@ record_GOW_note (unsigned int             gow,
       if (prev_gow == gow)
 	return;
       prev_gow = gow;
-      
+
       annobin_gen_string_note (info, is_problematic_gow (gow), "%s:0x%x", ANNOBIN_STRING_OPTIMIZE_LEV, gow);
     }
   else
@@ -1307,13 +1277,13 @@ record_stack_clash_note (annobin_function_info * info)
       if (prev_sc == optval)
 	return;
       prev_sc = optval;
-	  
+
       annobin_gen_string_note (info, optval != 1, "%s:%d", ANNOBIN_STRING_STACK_CLASH, optval);
     }
   else
     {
       unsigned len = sprintf (annobin_note_buffer, "GA%cstack_clash", optval ? BOOL_T : BOOL_F);
-  
+
       annobin_output_note (annobin_note_buffer, len + 1, true, /* The name is ASCII.  */
 			   "bool: -fstack-clash-protection status", info);
     }
@@ -1344,17 +1314,17 @@ record_cf_protection_note (annobin_function_info * info)
     case CF_NONE | CF_SET:
       setting = "none";
       break;
-      
+
     case CF_RETURN:
     case CF_RETURN | CF_SET:
       setting = "return only";
       break;
-      
+
     case CF_BRANCH:
     case CF_BRANCH | CF_SET:
       setting = "branch only";
       break;
-      
+
     case CF_FULL:
     case CF_FULL | CF_SET:
       setting = "full";
@@ -1367,7 +1337,7 @@ record_cf_protection_note (annobin_function_info * info)
 
   annobin_inform (INFORM_VERBOSE, "Recording local cf_protection status of '%s' for %s",
 		  setting, get_func_name (info));
-  
+
   if (use_string_format ())
     {
       static int prev_cf = -5;
@@ -1383,7 +1353,7 @@ record_cf_protection_note (annobin_function_info * info)
       unsigned len = sprintf (annobin_note_buffer, "GA%ccf_protection", NUMERIC);
 
       /* We bias the cf_protection enum value by 1 so that we do not get confused by a zero value.  */
-      annobin_note_buffer[++len] = optval + 1;
+      annobin_note_buffer[++len] = (char) (optval + 1);
       annobin_note_buffer[++len] = 0;
 
       annobin_output_note (annobin_note_buffer, len + 1, false, /* The name is not ASCII.  */
@@ -1429,7 +1399,7 @@ record_pic_note (unsigned int value, annobin_function_info * info)
 
   if (use_string_format ())
     {
-      static unsigned int prev_pic = (unsigned) -5;
+      static auto prev_pic = (unsigned) -5;
 
       if (prev_pic == value)
 	return;
@@ -1466,7 +1436,7 @@ function_asm_name (void)
   if (*id == '*')
     id ++;
 
-  if (*id == '0')
+  if (*id == '\0')
     return NULL;
 
   return id;
@@ -1526,7 +1496,7 @@ record_glibcxx_assertions (signed int on, annobin_function_info * info)
 			   info);
     }
 }
-		
+
 static annobin_function_info current_func;
 
 static void
@@ -1550,14 +1520,17 @@ annobin_emit_function_notes (bool force)
 {
   /* Make a copy of the current function info, so that we can override the symbols.  */
   annobin_function_info local_info = current_func;
-  
+
   annobin_target_specific_function_notes (& local_info, force);
 
-  int current_val;
-  unsigned int current_uval;
+  union
+  {
+    int           ival;
+    unsigned int  uval;
+  } current = {0};
 
-  current_val = GET_INT_OPTION_BY_INDEX (OPT_fstack_protector);
-  if (force || global_stack_prot_option != current_val)
+  current.ival = GET_INT_OPTION_BY_INDEX (OPT_fstack_protector);
+  if (force || global_stack_prot_option != current.ival)
     record_stack_protector_note (& local_info);
 
 #ifdef flag_stack_clash_protection
@@ -1573,21 +1546,21 @@ annobin_emit_function_notes (bool force)
   if (force || global_omit_frame_pointer != GET_INT_OPTION_BY_INDEX (OPT_fomit_frame_pointer))
     record_frame_pointer_note (& local_info);
 
-  current_uval = compute_pic_option ();
-  if (force || global_pic_option != current_val)
-    record_pic_note (current_uval, & local_info);
+  current.uval = compute_pic_option ();
+  if (force || global_pic_option != current.uval)
+    record_pic_note (current.uval, & local_info);
 
-  current_uval = compute_GOWall_options ();
-  if (force || global_GOWall_options != (unsigned) current_val)
-    record_GOW_note (current_uval, & local_info);
+  current.uval = compute_GOWall_options ();
+  if (force || global_GOWall_options != current.uval)
+    record_GOW_note (current.uval, & local_info);
 
-  current_val = GET_INT_OPTION_BY_INDEX (OPT_fshort_enums);
-  if (current_val != -1
-      && (force || global_short_enums != current_val))
-    record_short_enum_note (current_val, & local_info);
+  current.ival = GET_INT_OPTION_BY_INDEX (OPT_fshort_enums);
+  if (current.ival != -1
+      && (force || global_short_enums != current.ival))
+    record_short_enum_note (current.ival, & local_info);
 
-  current_val = GET_INT_OPTION_BY_INDEX (OPT_fstack_usage);
-  if (annobin_enable_stack_size_notes && current_val)
+  current.ival = GET_INT_OPTION_BY_INDEX (OPT_fstack_usage);
+  if (annobin_enable_stack_size_notes && current.ival)
     {
       if ((unsigned long) current_function_static_stack_size > stack_threshold)
 	{
@@ -1694,9 +1667,11 @@ annobin_create_function_notes (void * gcc_data  ATTRIBUTE_UNUSED,
     {
       annobin_inform (INFORM_VERBOSE, "Output file not available - unable to generate notes for %s",
 		      current_func.func_name);
+      current_func.func_name = NULL;
+      current_func.asm_name = NULL;
       return;
     }
-  
+
   if (current_func.func_name == NULL)
     {
       current_func.func_name = current_func.asm_name;
@@ -1715,7 +1690,7 @@ annobin_create_function_notes (void * gcc_data  ATTRIBUTE_UNUSED,
   /* Copy the names so that they are saved.  */
   current_func.func_name = concat (current_func.func_name, NULL);
   current_func.asm_name = concat (current_func.asm_name, NULL);
-  
+
   struct cgraph_node * node = annobin_get_node (current_function_decl);
   bool startup;
   bool exit;
@@ -1733,7 +1708,7 @@ annobin_create_function_notes (void * gcc_data  ATTRIBUTE_UNUSED,
     startup = exit = unlikely = likely = false;
 
   current_func.comdat = DECL_COMDAT_GROUP (current_function_decl) != NULL;
-  
+
   current_func.section_name = annobin_get_section_name (current_function_decl);
   if (current_func.section_name != NULL)
     /* This is just so that we can free it later.  */
@@ -1877,7 +1852,7 @@ annobin_create_function_notes (void * gcc_data  ATTRIBUTE_UNUSED,
 	   {
 	   default:
 	   case none:
-	     current_func.note_section_declaration = concat (GNU_BUILD_ATTRS_SECTION_NAME, 
+	     current_func.note_section_declaration = concat (GNU_BUILD_ATTRS_SECTION_NAME,
 							     ", \"\", ",
 							     annobin_section_type,
 							     NULL);
@@ -1895,7 +1870,7 @@ annobin_create_function_notes (void * gcc_data  ATTRIBUTE_UNUSED,
 							     LINK_ORDER_EXTENSION,
 							     ", \"o\", ",
 							     annobin_section_type, ", ",
-							     CODE_SECTION,	
+							     CODE_SECTION,
 							     NULL);
 	     break;
 	   }
@@ -1957,6 +1932,7 @@ annobin_create_function_notes (void * gcc_data  ATTRIBUTE_UNUSED,
 	 variant of the current function section, then we need to annotate
 	 that as well.  */
 
+      free ((void *) current_func.start_sym);
       current_func.start_sym = concat (ANNOBIN_SYMBOL_PREFIX, current_func.asm_name, ".start", COLD_SECTION, NULL);
       current_func.unlikely_end_sym = concat (ANNOBIN_SYMBOL_PREFIX, current_func.asm_name, ".end", COLD_SECTION, NULL);
 
@@ -1982,7 +1958,7 @@ typedef struct attach_item
 } attach_item;
 
 static attach_item * attach_list = NULL;
-  
+
 static void
 queue_attachment (const char * section_name, const char * group_name)
 {
@@ -2020,19 +1996,12 @@ emit_queued_attachments (void)
       else
 	annobin_inform (INFORM_VERBOSE, "queued attachment to an empty group");
 
-      // FIXME: BZ 1684148: These free()s are triggering "attempt to free unallocated
-      // memory" errors from the address sanitizer.  I have no idea why, as they were
-      // allocated by concat.  So for now, just leave them be.  The memory will be
-      // released when gcc terminates.
-      // free ((void *) item->section_name);
-      // free ((void *) item->group_name);
       next = item->next;
-      // FIXME: BZ #1638371 reports that this free() triggers an "invalid pointer"
-      // error when running under MALLOC_CHECK_.  I have no idea why, as the
-      // pointer certainly looks valid to me.  So for now, suppress the free.
-      // free ((void *) item);
+      free ((void *) item->section_name);
+      free ((void *) item->group_name);
+      free ((void *) item);
     }
-  // attach_list = NULL;
+  attach_list = NULL;
 }
 
 static void
@@ -2158,12 +2127,15 @@ record_annobin_version (const char               producer_char,
 	return;
       prev_char = producer_char;
 
-      annobin_gen_string_note (info, false, "%s:%d%c%d", ANNOBIN_STRING_ANNOBIN_VERSION, SPEC_VERSION, producer_char,
-			       annobin_version);
+      annobin_gen_string_note (info, false, "%s:%d%c%d",
+			       ANNOBIN_STRING_ANNOBIN_VERSION, SPEC_VERSION,
+			       producer_char, annobin_version);
     }
   else
     {
-      sprintf (annobin_note_buffer, "%d%c%d", 3 /*SPEC_VERSION */, producer_char, annobin_version);
+      /* Note we leave the SPEC VERSION field as 3 because tools like readelf
+	 expect this version of the ELF NOTE format of annobin data.  */
+      sprintf (annobin_note_buffer, "3%c%d", producer_char, annobin_version);
       annobin_output_string_note (GNU_BUILD_ATTRIBUTE_VERSION, annobin_note_buffer,
 				  "string: protocol version", info);
     }
@@ -2236,7 +2208,7 @@ annobin_emit_start_sym_and_version_note (const char * suffix,
 
       fprintf (asm_out_file, "\t.popsection\n");
     }
-  
+
   annobin_function_info info;
   memset (& info, 0, sizeof info);
   info.start_sym = concat (annobin_output_filesym, suffix, NULL);
@@ -2248,7 +2220,7 @@ annobin_emit_start_sym_and_version_note (const char * suffix,
 	{
 	default:
 	case none:
-	  info.note_section_declaration = concat (GNU_BUILD_ATTRS_SECTION_NAME, 
+	  info.note_section_declaration = concat (GNU_BUILD_ATTRS_SECTION_NAME,
 						  ", \"\", ",
 						  annobin_section_type,
 						  NULL);
@@ -2268,19 +2240,24 @@ annobin_emit_start_sym_and_version_note (const char * suffix,
 						  * suffix ? suffix : "",
 						  ", \"o\", ",
 						  annobin_section_type, ", "
-						  CODE_SECTION,	
+						  CODE_SECTION,
 						  suffix,
 						  NULL);
 	  break;
 	}
     }
 
+  /* Save pointers before the call because annobin_output_note
+     may nullify info.start_sym and info.end_sym.  */
+  const char * saved_start_sym = info.start_sym;
+  const char * saved_end_sym = info.end_sym;
+
   record_annobin_version (producer_char, & info);
 
   free ((void *) info.group_name);
   free ((void *) info.note_section_declaration);
-  free ((void *) info.end_sym);
-  free ((void *) info.start_sym);
+  free ((void *) saved_end_sym);
+  free ((void *) saved_start_sym);
 }
 
 static void
@@ -2308,7 +2285,7 @@ record_version_notes (annobin_function_info * info)
 				  "string: build-tool", info);
 
       annobin_output_string_note (GNU_BUILD_ATTRIBUTE_TOOL, build_version,
-				  "string: build-tool", info);      
+				  "string: build-tool", info);
 
 #if 0 /* Currently annocheck does nothing with plugin name note, so save space and do not generate it.  */
       annobin_output_string_note (GNU_BUILD_ATTRIBUTE_TOOL,
@@ -2329,7 +2306,7 @@ emit_global_notes (const char * suffix)
     {
     default:
     case none:
-      info.note_section_declaration = concat (GNU_BUILD_ATTRS_SECTION_NAME, 
+      info.note_section_declaration = concat (GNU_BUILD_ATTRS_SECTION_NAME,
 					      ", \"\", ",
 					      annobin_section_type,
 					      NULL);
@@ -2349,7 +2326,7 @@ emit_global_notes (const char * suffix)
 					      * suffix ? suffix : "",
 					      ", \"o\", ",
 					      annobin_section_type, ", ",
-					      CODE_SECTION,	
+					      CODE_SECTION,
 					      suffix,
 					      NULL);
       break;
@@ -2441,10 +2418,10 @@ emit_global_notes (const char * suffix)
 	}
     }
 
+ free_mem:
   /* Record target specific notes.  */
   annobin_record_global_target_notes (& info);
 
- free_mem:
   free ((void *) info.group_name);
   free ((void *) info.note_section_declaration);
 }
@@ -2484,22 +2461,32 @@ annobin_record_define (const char * arg)
   if (arg == NULL)
     return;
 
-  annobin_inform (INFORM_VERY_VERBOSE, "decoded arg -D%s", arg);
+  annobin_inform (INFORM_VERBOSE, "decoded arg: -D%s", arg);
 
   if (starts_with (arg, FORTIFY_OPTION))
     {
-      arg += strlen (FORTIFY_OPTION) + 1;
-
-      int level = atoi (arg);
-
-      if (level < 0 || level > 3)
+      if (arg[strlen (FORTIFY_OPTION)] != '=')
 	{
-	  annobin_inform (INFORM_ALWAYS, "Unexpected value for -D" FORTIFY_OPTION " of %s", arg);
-	  level = level > 3 ? 3 : 0;
+	  if (global_fortify_level == -1)
+	    // GCC treats -D_FORTIFY_SOURCE as -D_FORTIFY_SOURCE=1
+	    global_fortify_level = 1;
 	}
+      else
+	{
+	  arg += strlen (FORTIFY_OPTION) + 1;
 
-      if (global_fortify_level == -1)
-	global_fortify_level = level;
+	  char * end;
+	  long level = strtol (arg, &end, 0);
+
+	  if (end == NULL || end == arg || * end != 0 || level < 0 || level > 3)
+	    {
+	      annobin_inform (INFORM_ALWAYS, "Unexpected value for -D" FORTIFY_OPTION " of %s", arg);
+	      level = level > 3 ? 3 : 0;
+	    }
+
+	  if (global_fortify_level == -1)
+	    global_fortify_level = (int) level;
+	}
     }
 
   else if (starts_with (arg, GLIBCXX_OPTION))
@@ -2531,7 +2518,7 @@ annobin_record_undefine (const char * arg)
   if (arg == NULL)
     return;
 
-  annobin_inform (INFORM_VERY_VERBOSE, "decoded arg -U%s", arg);
+  annobin_inform (INFORM_VERBOSE, "decoded arg: -U%s", arg);
 
   if (starts_with (arg, FORTIFY_OPTION))
     {
@@ -2639,7 +2626,7 @@ annobin_create_global_notes (void * gcc_data  ATTRIBUTE_UNUSED,
      unless enabled globally.  So do not record a negative global setting.  */
   if (global_stack_prot_option == 0 && in_lto ())
     global_stack_prot_option = -1;
-  
+
   global_pic_option = compute_pic_option ();
   global_short_enums = GET_INT_OPTION_BY_INDEX (OPT_fshort_enums);
   global_GOWall_options = compute_GOWall_options ();
@@ -2664,7 +2651,7 @@ annobin_create_global_notes (void * gcc_data  ATTRIBUTE_UNUSED,
 	    annobin_active_check ("-Wno-implicit-function-declaration detected - is this intentional ?");
 	}
     }
-  
+
   global_omit_frame_pointer = GET_INT_OPTION_BY_INDEX (OPT_fomit_frame_pointer);
 
   /* Look for -D _FORTIFY_SOURCE=<n> and -D_GLIBCXX_ASSERTIONS on the
@@ -2673,136 +2660,175 @@ annobin_create_global_notes (void * gcc_data  ATTRIBUTE_UNUSED,
 
   unsigned u;
 
-  annobin_inform (INFORM_VERY_VERBOSE, "There are %d options in the saved_decoded_options array",
+  annobin_inform (INFORM_VERBOSE, "There are %d options in the saved_decoded_options array",
 		  save_decoded_options_count);
 
   for (u = save_decoded_options_count; u--;)
     {
       const char * arg = save_decoded_options[u].arg;
 
-      annobin_inform (INFORM_VERY_VERBOSE, "Examining saved option: %ld %s",
+      annobin_inform (INFORM_VERBOSE, "Examining saved option: %ld %s",
 		      (long) save_decoded_options[u].opt_index, arg ? arg : "<none>");
 
       /* Note: Looking for an opt_index of OPT_Wp_, OPT_U and/or OPT_D is problematic
 	 as these values change frquently between versions of GCC.  So instead scan
-	 the text of the option.  */
-      if (streq (save_decoded_options[u].canonical_option[0], "-U"))
+	 the text of the option.  Also handle the joined format (e.g. "-D_FOO" as a
+	 single canonical_option[0]) since some GCC versions use this form.  */
+      const char * opt = save_decoded_options[u].canonical_option[0];
+
+      if (streq (opt, "-U"))
 	annobin_record_undefine (save_decoded_options[u].canonical_option[1]);
-      else if (streq (save_decoded_options[u].canonical_option[0], "-D"))
+      else if (streq (opt, "-D"))
 	annobin_record_define (save_decoded_options[u].canonical_option[1]);
+      else if (opt[0] == '-' && opt[1] == 'U' && opt[2] != 0)
+	annobin_record_undefine (opt + 2);
+      else if (opt[0] == '-' && opt[1] == 'D' && opt[2] != 0)
+	annobin_record_define (opt + 2);
     }
 
-  if (global_fortify_level == -1 || global_glibcxx_assertions == -1)
+  /* Not all gcc command line options get passed on to cc1 (or cc1plus).
+     So if we have not seen one of the options that interests us we check
+     the COLLECT_GCC_OPTIONS environment variable instead.
+     For GLIBCXX_ASSERTIONS we always check COLLECT_GCC_OPTIONS, even if
+     a value was found in save_decoded_options, because spec-injected -D
+     options can appear after the user's -U in save_decoded_options and
+     incorrectly override it.  COLLECT_GCC_OPTIONS reflects the user's
+     original command line intent and should take precedence.  */
+  const char * cgo = getenv ("COLLECT_GCC_OPTIONS");
+
+  if (cgo != NULL)
     {
-      /* Not all gcc command line options get passed on to cc1 (or cc1plus).
-	 So if we have not see one of the options that interests us we check
-	 the COLLECT_GCC_OPTIONS environment variable instead.  */
-      const char * cgo = getenv ("COLLECT_GCC_OPTIONS");
+      annobin_inform (INFORM_VERBOSE, "Scanning the COLLECT_GCC_OPTIONS environment variable");
 
-      if (cgo != NULL)
+      if (global_fortify_level == -1)
 	{
-	  if (global_fortify_level == -1)
+	  int level = -1;
+	  const char * fort = cgo;
+
+	  while ((fort = strstr (fort, FORTIFY_OPTION)) != NULL)
 	    {
-	      int level = -1;
-	      const char * fort = cgo;
+	      const char * next_fort = fort + strlen (FORTIFY_OPTION);
 
-	      while ((fort = strstr (fort, FORTIFY_OPTION)) != NULL)
+	      if (fort > cgo && fort[-1] == 'U')
+		level = 0;
+	      else if (fort > cgo && fort[-1] == 'D')
 		{
-		  const char * next_fort = fort + strlen (FORTIFY_OPTION);
+		  char * end;
 
-		  if (fort[-1] == 'U')
-		    level = 0;
-		  else if (fort[-1] == 'D')
-		    level = atoi (next_fort + 1);
-		  else if (fort[-1] == '\'')
+		  level = (int) strtol (next_fort + 1, &end, 0);
+
+		  if (end == NULL || end == (next_fort + 1)
+		      || (* end != 0 && ! ISSPACE (* end)))
+		    level = -1;
+		}
+	      else if (fort > cgo && fort[-1] == '\'')
+		{
+		  // We are expecting to find cgo="...'-D' '_FORTIFY_SOURCE=2'..." or something similar.
+		  const char * back = fort - 1;
+
+		  while (--back >= cgo)
 		    {
-		      // We are expecting to find cgo="...'-D' '_FORTIFY_SOURCE=2'..." or something similar.
-		      const char * back = fort - 1;
+		      if (*back == ' ' || *back == '\t' || * back == '\'')
+			continue;
+		      break;
+		    }
 
-		      while (--back >= cgo)
-			{
-			  if (*back == ' ' || *back == '\t' || * back == '\'')
-			    continue;
-			  break;
-			}
+		  if (back < cgo)
+		    ;
+		  else if (*back == 'U')
+		    level = 0;
+		  else if (*back == 'D')
+		    {
+		      char * end;
 
-		      if (*back == 'U')
-			level = 0;
-		      else if (*back == 'D')
-			level = atoi (next_fort + 1);
-		      else
+		      level = (int) strtol (next_fort + 1, &end, 0);
+
+		      if (end == NULL || end == (next_fort + 1)
+			  || (* end != 0 && ! ISSPACE (* end)))
 			{
 			  annobin_inform (INFORM_VERBOSE, "option = %s", back);
-			  annobin_active_check ("option similar to, but not the same as, -D_FORTIFY_SOURCE seen");
+			  annobin_active_check ("argument to -D_FORTIFY_SOURCE is invalid");
 			}
 		    }
-		  else if (fort[-1] != '_')
+		  else
 		    {
-		      annobin_inform (INFORM_VERBOSE, "option = %s", fort - 1);
+		      annobin_inform (INFORM_VERBOSE, "option = %s", back);
 		      annobin_active_check ("option similar to, but not the same as, -D_FORTIFY_SOURCE seen");
 		    }
-
-		  fort = next_fort;
 		}
-
-	      if (level != -1)
+	      else if (fort > cgo && fort[-1] != '_')
 		{
-		  if (level < 0 || level > 3)
-		    {
-		      annobin_inform (INFORM_ALWAYS, "Unexpected value in -D" FORTIFY_OPTION);
-		      level = 0;
-		    }
-
-		  global_fortify_level = level;
+		  annobin_inform (INFORM_VERBOSE, "option = %s", fort - 1);
+		  annobin_active_check ("option similar to, but not the same as, -D_FORTIFY_SOURCE seen");
 		}
+
+	      fort = next_fort;
 	    }
 
-	  if (global_glibcxx_assertions == -1)
+	  if (level != -1)
 	    {
-	      int on = -1;
-	      const char * glca = cgo;
-
-	      while ((glca = strstr (glca, GLIBCXX_OPTION)) != NULL)
+	      if (level < 0 || level > 3)
 		{
-		  if (glca[-1] == 'U')
-		    on = false;
-		  else if (glca[-1] == 'D')
-		    on = true;
-		  else if (glca[-1] == '\'')
-		    {
-		      // We are expecting to find cgo="...'-D' '_GLIBCXX_ASSERTIONS'..." or something similar.
-		      const char * back = glca - 1;
-
-		      while (--back >= cgo)
-			{
-			  if (*back == ' ' || *back == '\t' || * back == '\'')
-			    continue;
-			  break;
-			}
-
-		      if (*back == 'U')
-			on = false;
-		      else if (*back == 'D')
-			on = true;
-		      else
-			{
-			  annobin_inform (INFORM_VERBOSE, "option = %s", back);
-			  annobin_active_check ("option similar to, but not the same as, -D_GLIBCXX_ASSERTIONS seen");
-			}
-		    }
-		  else if (glca[-1] != '_')
-		    {
-		      annobin_inform (INFORM_VERBOSE, "option = %s", glca - 1);
-		      annobin_active_check ("option similar to, but not the same as, -D_GLIBCXX_ASSERTIONS seen");
-		    }
-
-		  glca = glca + strlen (GLIBCXX_OPTION);
+		  annobin_inform (INFORM_ALWAYS, "Unexpected value in -D" FORTIFY_OPTION);
+		  level = 0;
 		}
 
-	      if (on != -1)
-		global_glibcxx_assertions = on;
+	      annobin_inform (INFORM_VERY_VERBOSE, "detected -D_FORTIFY_SOURCE=%d in COLLECT_GCC_OPTIONS", level);
+	      global_fortify_level = level;
 	    }
 	}
+
+      {
+	int on = -1;
+	const char * glca = cgo;
+
+	while ((glca = strstr (glca, GLIBCXX_OPTION)) != NULL)
+	  {
+	    if (glca > cgo && glca[-1] == 'U')
+	      on = false;
+	    else if (glca > cgo && glca[-1] == 'D')
+	      on = true;
+	    else if (glca > cgo && glca[-1] == '\'')
+	      {
+		// We are expecting to find cgo="...'-D' '_GLIBCXX_ASSERTIONS'..." or something similar.
+		const char * back = glca - 1;
+
+		while (--back >= cgo)
+		  {
+		    if (*back == ' ' || *back == '\t' || * back == '\'')
+		      continue;
+		    break;
+		  }
+
+		if (back < cgo)
+		  ;
+		else if (*back == 'U')
+		  on = false;
+		else if (*back == 'D')
+		  on = true;
+		else
+		  {
+		    annobin_inform (INFORM_VERBOSE, "option = %s", back);
+		    annobin_active_check ("option similar to, but not the same as, -D_GLIBCXX_ASSERTIONS seen");
+		  }
+	      }
+	    else if (glca > cgo && glca[-1] != '_')
+	      {
+		annobin_inform (INFORM_VERBOSE, "option = %s", glca - 1);
+		annobin_active_check ("option similar to, but not the same as, -D_GLIBCXX_ASSERTIONS seen");
+	      }
+
+	    glca = glca + strlen (GLIBCXX_OPTION);
+	  }
+
+	if (on != -1)
+	  {
+	    annobin_inform (INFORM_VERY_VERBOSE, "detected -D_GLIBCXX_ASSERTIONS in COLLECT_GCC_OPTIONS");
+	    global_glibcxx_assertions = on;
+	  }
+      }
+
+      annobin_inform (INFORM_VERBOSE, "Scan of COLLECT_GCC_OPTIONS complete");
     }
 
   if (global_fortify_level == -1)
@@ -2819,7 +2845,7 @@ annobin_create_global_notes (void * gcc_data  ATTRIBUTE_UNUSED,
 	 access to the original input text, we cannot examine that.  So for
 	 now we assume that if the input filename ends in .i or .ii then
 	 it is preprocessed.
-	 
+
 	 Since preprocessed inputs ignore any -D, -U or -Wp options on
 	 the command line, we just have to assume that they were created
 	 with the necessry defines enabled.  */
@@ -2848,7 +2874,15 @@ annobin_create_global_notes (void * gcc_data  ATTRIBUTE_UNUSED,
       global_glibcxx_assertions = 1;
       annobin_inform (INFORM_VERY_VERBOSE, "Assuming -D_GLIBCXX_ASSERTIONS for LTO/preprocessed input");
     }
-  
+#ifdef flag_hardened
+  else if (global_glibcxx_assertions == -1
+	   && GET_INT_OPTION_BY_NAME (flag_hardened) != 0)
+    {
+      global_glibcxx_assertions = 1;
+      annobin_inform (INFORM_VERY_VERBOSE, "Assuming -D_GLIBCXX_ASSERTIONS enabled by -fhardened");
+    }
+#endif
+
   if (! in_lto ()
       && GET_STR_OPTION_BY_NAME (flag_lto) != NULL)
     {
@@ -2868,7 +2902,7 @@ annobin_create_global_notes (void * gcc_data  ATTRIBUTE_UNUSED,
 	  warned = true;
 	}
 
-      if (global_glibcxx_assertions != 1)
+      if (global_glibcxx_assertions == -1)
 	{
 	  if (ends_with (annobin_input_filename, ".c")
 	      || ends_with (annobin_input_filename, ".i")
@@ -2883,6 +2917,11 @@ annobin_create_global_notes (void * gcc_data  ATTRIBUTE_UNUSED,
 	      annobin_active_check ("-D_GLIBCXX_ASSERTIONS not defined");
 	      warned = true;
 	    }
+	}
+      else if (global_glibcxx_assertions != 1)
+	{
+	  annobin_active_check ("-D_GLIBCXX_ASSERTIONS not defined");
+	  warned = true;
 	}
 
       if (warned)
@@ -3003,7 +3042,7 @@ annobin_emit_end_symbol (const char * suffix)
       /* Note: we cannot test "start sym > end sym" as these symbols may not have values
 	 yet, (due to the possibility of linker relaxation).  But we are allowed to
 	 test for symbol equality.  So we fudge things a little....  */
-     
+
       fprintf (asm_out_file, "\t.if %s%s == %s%s + %d\n", annobin_output_filesym, suffix,
 	       annobin_current_endname, suffix, target_start_sym_bias);
       fprintf (asm_out_file, "\t  .set %s%s, %s%s\n", annobin_output_filesym, suffix,
@@ -3067,12 +3106,15 @@ parse_argument (const char * key, const char * value, void * data)
   if (streq (key, "disable"))
     enabled = false;
 
-  /* Private option used to allow building of the plugin whilst
-     another version of the plugin is also active.  */
-  else if (const_strneq (key, "rename="))
-    annobin_extra_prefix = key + strlen ("rename=");
+  /* Private option used to allow building of the plugin
+     whilst another version of the plugin is also active.  */
   else if (streq (key, "rename"))
-    annobin_extra_prefix = ".1";
+    {
+      if (value == NULL || value[0] == 0)
+	annobin_extra_prefix = ".1";
+      else
+	annobin_extra_prefix = concat (value, NULL);
+    }
 
   else if (streq (key, "enable"))
     enabled = true;
@@ -3115,6 +3157,12 @@ parse_argument (const char * key, const char * value, void * data)
 
   else if (streq (key, "note-format"))
     {
+      if (value == NULL)
+	{
+	  fprintf (stderr, "annobin: note-format option missing =note/=string\n");
+	  return false;
+	}
+
       if (streq (value, "note"))
 	annobin_note_format = note;
       else if (streq (value, "notes"))
@@ -3134,9 +3182,15 @@ parse_argument (const char * key, const char * value, void * data)
     enable_ppc64_nops = true;
   else if (streq (key, "no-ppc64-nops"))
     enable_ppc64_nops = false;
-      
+
   else if (streq (key, "stack-threshold"))
     {
+      if (value == NULL)
+	{
+	  fprintf (stderr, "annobin: stack-threshold option requires numeric argument\n");
+	  return false;
+	}
+
       stack_threshold = strtoul (value, NULL, 0);
       if (stack_threshold == 0)
 	stack_threshold = DEFAULT_THRESHOLD;
@@ -3149,7 +3203,7 @@ parse_argument (const char * key, const char * value, void * data)
 	 may not be accessible.  */
       if (data == NULL)
 	fprintf (stderr, "annobin: unrecognised command line option: %s\n", key);
-      else
+      else // data == "env"
 	fprintf (stderr, "annobin: unrecognised ANNOBIN environment option: %s\n", key);
       return false;
     }
@@ -3158,7 +3212,7 @@ parse_argument (const char * key, const char * value, void * data)
   // They might be unaware that the environment variable exists...
   if (data == NULL)
     annobin_inform (INFORM_VERBOSE, "parsed arg %s from command line", key);
-  else
+  else // data == "env"
     annobin_inform (INFORM_VERBOSE, "parsed arg %s from ANNOBIN environment variable", key);
 
   return true;
@@ -3182,6 +3236,7 @@ parse_args (unsigned argc, struct plugin_argument * argv)
   return result;
 }
 
+#if GCCPLUGIN_VERSION_MAJOR > 13
 typedef struct callback_data
 {
   unsigned int num_with_annobin_prefix;
@@ -3207,6 +3262,7 @@ callback (const plugin_name_args * name_args ATTRIBUTE_UNUSED,
   if (name_args != NULL && name_args->version == NULL)
     cbd->num_with_no_version ++;
 }
+#endif
 
 static bool
 multiple_annobin_plugins_present (const char * name)
@@ -3230,7 +3286,7 @@ multiple_annobin_plugins_present (const char * name)
        annobin: foo.c: disabling plugin another-annobin.  Use -rename option if multiple annobin plugins are needed
 
      whereas:
-     
+
        gcc foo.c -fplugin=annobin -fplugin=another-annobin -fplugin-arg-annobin-verbose -fplugin-arg-another-annobin-verbose
 
      will produce:
@@ -3255,7 +3311,7 @@ multiple_annobin_plugins_present (const char * name)
       return false;
     }
 
-#if GCCPLUGIN_VERSION_MAJOR > 11
+#if GCCPLUGIN_VERSION_MAJOR > 13
   /* We used to call plugins_active_p() here but this only lets us know if
      there are other active plugins.  It does not tell us if they are
      different versions of the annobin plugin.  So instead we iterate
@@ -3305,7 +3361,7 @@ multiple_annobin_plugins_present (const char * name)
       return true;
     }
 #endif
-  
+
   return false;
 }
 
@@ -3346,13 +3402,14 @@ plugin_init (struct plugin_name_args *    plugin_info,
 
   if (! enabled)
     return 0;
-  
+
   /* Create a file name symbol to be referenced by the notes.  */
   if (! init_annobin_output_filesym ())
     {
       ice ("Could not find output filename");
-      /* We need a filesym, so invent one.  */
+      /* We need a filesym and endname, so invent them.  */
       annobin_output_filesym = (char *) "unknown_source";
+      annobin_current_endname = (char *) "unknown_source_end";
     }
 
   if (BE_VERBOSE)
@@ -3366,7 +3423,9 @@ plugin_init (struct plugin_name_args *    plugin_info,
 	 major, minor and revision numbers all match.  Since annobin only
 	 lightly touches gcc we assume that major number compatibility will
 	 be sufficient.  [FIXME: It turns out that this is not entirely true...]  */
-      if (strncmp (version->basever, gcc_version.basever, strchr (version->basever, '.') - version->basever) != 0)
+      const char * dot = strchr (version->basever, '.');
+      if (dot == NULL
+	  || strncmp (version->basever, gcc_version.basever, dot - version->basever) != 0)
 	{
 	  annobin_inform (INFORM_ALWAYS, "Error: plugin built for compiler version (%s) but run with compiler version (%s)",
 			  gcc_version.basever, version->basever);
@@ -3444,7 +3503,7 @@ plugin_init (struct plugin_name_args *    plugin_info,
       if (fail)
 	return 1;
     }
-  
+
   target_start_sym_bias = annobin_target_start_symbol_bias ();
   if (annobin_attach_type == not_set)
     {

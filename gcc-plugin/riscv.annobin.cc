@@ -50,6 +50,7 @@ annobin_record_global_target_notes (annobin_function_info * info ATTRIBUTE_UNUSE
 }
 
 void
-annobin_target_specific_function_notes (annobin_function_info * info, bool force)
+annobin_target_specific_function_notes (annobin_function_info * info ATTRIBUTE_UNUSED,
+					bool force ATTRIBUTE_UNUSED)
 {
 }

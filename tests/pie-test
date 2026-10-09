@@ -1,0 +1,97 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck detects PIE vs non-PIE executables via --test-pie
+
+TEST_NAME=pie
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-c -O2 -D_FORTIFY_SOURCE=2 -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+
+start_test
+
+# Part 1: Compile and link as PIE 
+
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -fPIE $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -fPIE $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -fPIE $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -fPIE $srcdir/hello_lib.c && \
+    $GCC hello.o hello2.o hello3.o hello_lib.o -pie -Wl,-z,now,-z,relro -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile and link PIE test executable"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+SKIPS="--skip-all --test-pie --suppress-version-warnings --verbose"
+A_COMMAND="$ANNOCHECK $EXE $SKIPS"
+
+$A_COMMAND > $A_OUT
+grep -q -e"PASS: pie test" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not PASS for PIE executable"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck PASSed a PIE executable"
+
+#--------------------------------------------------------------------------
+
+# Part 2: Compile and link as non-PIE
+
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -fno-PIE $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -fno-PIE $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -fno-PIE $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -fno-PIE $srcdir/hello_lib.c && \
+    $GCC hello.o hello2.o hello3.o hello_lib.o -no-pie -Wl,-z,now,-z,relro -o $EXE > $G_OUT 2>&1
+
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link non-PIE executable (compiler may force PIE)"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Verify it is actually not a PIE
+$READELF -h $EXE 2>/dev/null | grep -q "DYN"
+if [ $? == 0 ];
+then
+    echo " $TEST_NAME: SKIP: linker produced a PIE despite -no-pie (distro may enforce PIE)"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+A_COMMAND="$ANNOCHECK $EXE $SKIPS --verbose"
+$A_COMMAND > $A_OUT
+grep -q -e"FAIL: pie test" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not FAIL for non-PIE executable"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck FAILed a non-PIE executable"
+
+end_test

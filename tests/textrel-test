@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck detects text relocations via --test-textrel
+
+TEST_NAME=textrel
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-O2 -D_FORTIFY_SOURCE=2 -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+
+start_test
+
+# Part 1: Compile a shared library with -fPIC (no text relocations) - should PASS
+EXE=textrel-pass.so
+
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS -fPIC $srcdir/hello_lib.c
+$GCC -shared hello_lib.o -Wl,-z,now,-z,relro -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link test shared library"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+SKIPS="--skip-all --test-textrel --suppress-version-warnings"
+A_COMMAND="$ANNOCHECK $EXE $SKIPS --verbose"
+
+$A_COMMAND > $A_OUT
+grep -q -e"FAIL: textrel test" $A_OUT
+if [ $? == 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck incorrectly reported text relocations in a -fPIC shared library"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck correctly PASSed a -fPIC shared library"
+
+#----------------------------------------------------------------
+
+# Part 2: Try to create a shared library with text relocations.
+# Compile without -fPIC and link with -Wl,-z,notext to allow text relocations.
+EXE=textrel-fail.so
+
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello_lib.c
+$GCC -shared hello_lib.o -Wl,-z,notext -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to create shared library with text relocations"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Verify it actually has text relocations before testing annocheck
+$READELF -d $EXE 2>/dev/null | grep -q TEXTREL
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: shared library does not contain TEXTREL even when compiled without -fPIC"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+A_COMMAND="$ANNOCHECK textrel-fail.so $SKIPS"
+$A_COMMAND > $A_OUT
+grep -q -e"FAIL: textrel test" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not detect text relocations"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck detected text relocations"
+
+end_test

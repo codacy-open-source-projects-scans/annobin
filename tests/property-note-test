@@ -15,6 +15,10 @@
 
 # Test that a bad GNU Property note section/segment is detected.
 
+# FIXME: Currently only property notes for AArch64 and x86_64 are
+# used (for hardening purposes) so this test needs to be host
+# architecture specific.
+
 TEST_NAME=property-note
 . $srcdir/common.sh
 
@@ -23,6 +27,16 @@ OPTS="-c -O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX
 EXTRA_OPTS="-fcf-protection -mstackrealign"
 
 start_test
+
+uname -m > host
+grep -q -e "x86_64" host
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: SKIP: This test is currently only supported on the x86_64 architecture"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
 
 $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS  $srcdir/hello_hard.c 
 if [ $? != 0 ];
@@ -42,23 +56,38 @@ then
 	    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $srcdir/hello_hard.c 
 	    if [ $? != 0 ];
 	    then
-		echo "Failed :-("
-		exit 1
+		echo "$TEST_NAME: SKIP: Unable to compile test files"
+		end_test
+		exit $EXIT_TEST_SKIPPED
 	    fi
 	fi
     fi
 fi
 
 $GAS $srcdir/property-note.S -o property-note.o
-
 $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $EXTRA_OPTS -c $srcdir/hello.c $srcdir/hello3.c
+$GCC -pie hello.o property-note.o hello3.o -Wl,--defsym,big_stack=0 -Wl,-z,now -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile & link test code"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
 
-$GCC -pie hello.o property-note.o hello3.o -o property-note-test.exe -Wl,--defsym,big_stack=0 -Wl,-z,now
+SKIPS="--skip-cf-protection --skip-lto"
 
-$ANNOCHECK property-note-test.exe --suppress-version-warnings > property-note-test.out
+$ANNOCHECK $SKIPS $EXE --suppress-version-warnings > $A_OUT
 
-cat property-note-test.out
+grep -q -e "FAIL: property-note" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not detect a bad property note"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
 
-grep --silent "Bad GNU Property note" property-note-test.out
+echo " $TEST_NAME: PASS: annocheck detected a bad property note"
 
 end_test

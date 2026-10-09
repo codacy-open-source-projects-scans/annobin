@@ -1,4 +1,4 @@
-/* Computes the cumulative size of section(s) in binary files. 
+/* Computes the cumulative size of section(s) in binary files.
    Copyright (C) 2018-2026 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
@@ -44,7 +44,7 @@ typedef struct sec_size
 } sec_size;
 
 static sec_size * sec_list = NULL;
-  
+
 static void
 add_section (const char * name)
 {
@@ -103,7 +103,7 @@ size_interesting_sec (annocheck_data *     data,
 
   if (track_total_size)
     total_sections_size += sec->shdr.sh_size;
-  
+
   sec_size * sz;
 
   for (sz = sec_list; sz != NULL; sz = sz->next)
@@ -279,7 +279,7 @@ size_end_scan (uint level, const char * datafile)
 	  print_size (sec_flag_size);
 	  einfo (PARTIAL, "\n");
 	}
-	
+
       if (seg_need_flags || seg_not_flags)
 	{
 	  einfo (INFO, "%u segments match flag requirements, total size: ", seg_flag_match);
@@ -330,18 +330,19 @@ size_end_scan (uint level, const char * datafile)
 }
 
 static bool
-size_process_arg (const char * arg, const char ** argv, const uint argc ATTRIBUTE_UNUSED, uint * next)
+size_process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
 {
   if (arg[0] == '-')
     ++ arg;
   if (arg[0] == '-')
     ++ arg;
 
-  if (const_strneq (arg, "sec-flags="))
+#define SEC_FLAGS "size-sec-flags="
+  if (const_strneq (arg, SEC_FLAGS))
     {
-      const char * flag = arg + strlen ("sec-flags=");
+      const char * flag = arg + strlen (SEC_FLAGS);
       Elf64_Word * addto = & sec_need_flags;
-      
+
       disabled = false;
 
       while (*flag)
@@ -374,10 +375,11 @@ size_process_arg (const char * arg, const char ** argv, const uint argc ATTRIBUT
 
       return true;
     }
-  
-  if (const_strneq (arg, "seg-flags="))
+
+#define SEG_FLAGS "size-seg-flags="
+  if (const_strneq (arg, SEG_FLAGS))
     {
-      const char * flag = arg + strlen ("size-seg-flags=");
+      const char * flag = arg + strlen (SEG_FLAGS);
       Elf64_Word * addto = & seg_need_flags;
 
       disabled = false;
@@ -412,7 +414,7 @@ size_process_arg (const char * arg, const char ** argv, const uint argc ATTRIBUT
 
       return true;
     }
-  
+
   if (const_strneq (arg, "section-size") /* Deprecated.  */
       || const_strneq (arg, "sec"))
     {
@@ -421,6 +423,11 @@ size_process_arg (const char * arg, const char ** argv, const uint argc ATTRIBUT
 
       if ((parameter = strchr (arg, '=')) == NULL)
 	{
+	  if (argv == NULL || next == NULL || * next >= argc)
+	    {
+	      einfo (WARN, "The --sec option requires a parameter");
+	      return true;
+	    }
 	  sought = argv[* next];
 	  * next = * next + 1;
 	}
@@ -441,7 +448,7 @@ size_process_arg (const char * arg, const char ** argv, const uint argc ATTRIBUT
       track_total_size = true;
       return true;
     }
-  
+
   if (streq (arg, "human"))
     {
       human = true;
@@ -490,7 +497,7 @@ size_version (int level)
     einfo (INFO, "Version 1.3");
 }
 
-struct checker size_checker = 
+struct checker size_checker =
 {
   "Size",
   NULL,  /* altname */
@@ -509,7 +516,7 @@ struct checker size_checker =
 };
 
 static __attribute__((constructor)) void
-size_register_checker (void) 
+size_register_checker (void)
 {
   if (! annocheck_add_checker (& size_checker, (int) ANNOBIN_VERSION))
     disabled = true;

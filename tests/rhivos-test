@@ -16,7 +16,7 @@ TEST_NAME=rhivos
 . $srcdir/common.sh
 
 PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
-OPTS="-fpie -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+OPTS="-fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
 FORT_OPTS="-O2 -D_FORTIFY_SOURCE=2"
 
 #FIXME: Add more RHIVOS specific failures...
@@ -37,85 +37,84 @@ start_test
 $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS $FORT_OPTS $OPTS $srcdir/hello2.c
 $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS $FORT_OPTS $OPTS $srcdir/hello_lib.c
 $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS $FORT_OPTS $OPTS $srcdir/hello3.c
-
 $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $LD_OPTS hello2.o hello3.o hello_lib.o -o rhivos-test.so
 
 if [ $? != 0 ];
 then
-    echo "$TEST_NAME: Failed to compile test library"
+    echo "$TEST_NAME: SKIP: Failed to compile test library"
     end_test
-    exit 1
+    exit $EXIT_TEST_SKIPPED
 fi
 
 AOPTS="--ignore-gaps --skip-all --test-rhivos --suppress-version-warnings --verbose --no-urls"
-$ANNOCHECK $AOPTS rhivos-test.so > rhivos.out
+$ANNOCHECK $AOPTS rhivos-test.so > $A_OUT
 
 result=0
 
-grep -q -e "FAIL: rhivos test because SONAME includes a directory separator character" rhivos.out
+grep -q -e "FAIL: rhivos test because SONAME includes a directory separator character" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck did not detect a shared library name containing a directory separator"
     result=1
 fi
 
-grep -q -e "FAIL: rhivos test because SONAME not the same as the filename" rhivos.out
+grep -q -e "FAIL: rhivos test because SONAME not the same as the filename" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck did not detect a shared library name different from its executable"
     result=1
 fi
 
-grep -q -e "FAIL: rhivos test because the DT_DEPAUDIT dynamic tag is present" rhivos.out
+grep -q -e "FAIL: rhivos test because the DT_DEPAUDIT dynamic tag is present" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck did not detect the DT_DEPAUDIT dynamic tag"
     result=1
 fi
 
-grep -q -e "FAIL: rhivos test because the DT_AUDIT dynamic tag is present" rhivos.out
+grep -q -e "FAIL: rhivos test because the DT_AUDIT dynamic tag is present" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck did not detect the DT_AUDIT dynamic tag"
     result=1
 fi
 
-grep -q -e "FAIL: rhivos test because the DT_AUXILIARY dynamic tag is present" rhivos.out
+grep -q -e "FAIL: rhivos test because the DT_AUXILIARY dynamic tag is present" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck did not detect the DT_AUXILIARY dynamic tag"
     result=1
 fi
 
-grep -q -e "FAIL: rhivos test because the DT_FILTER dynamic tag is present" rhivos.out
+grep -q -e "FAIL: rhivos test because the DT_FILTER dynamic tag is present" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck did not detect the DT_FILTER dynamic tag"
     result=1
 fi
 
-grep -q -e "FAIL: bind-now test because not linked with -Wl,-z,now" rhivos.out
+grep -q -e "FAIL: bind-now test because not linked with -Wl,-z,now" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck did not detect linking without -z,now"
     result=1
 fi
 
-grep -q -e "FAIL: gnu-stack test because the GNU stack segment has execute permission" rhivos.out
+grep -q -e "FAIL: gnu-stack test because the GNU stack segment has execute permission" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck did not detect an executable stack"
     result=1
 fi
 
-grep -q -e "PASS: gnu-relro" rhivos.out
+grep -q -e "PASS: gnu-relro" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck did not detect the use of RELRO"
     result=1
 fi
 
-grep -q -e "PASS: load-segments" rhivos.out
+grep -q -e "PASS: load-segments" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck did not detect the absence of a segment with RWX permission"
@@ -124,12 +123,14 @@ fi
 
 if [ $result == 1 ];
 then
-    echo "$TEST_NAME: Annocheck output: "
-    cat rhivos.out
+    echo "$TEST_NAME: FAIL: Annocheck output: "
+    cat $A_OUT
     uuencode rhivos-test.so rhivos-test.so
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
+
+echo "$TEST_NAME: PASS: Annocheck correctly detected RHIVOS related issues"
 
 end_test
 

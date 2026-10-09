@@ -20,21 +20,36 @@ TEST_NAME=debuginfod
 
 PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
 
-FAIL=" $TEST_NAME: FAIL:"
+start_test
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c $GCC_OPTS"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: SKIP: could not compile test file"
+    echo "$TEST_NAME: gcc command line: $COMMAND"
+    echo "$TEST_NAME: gcc output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
 
 if [ -z $(command -v $DEBUGINFOD) ]; then
-  echo "$FAIL Could not find debuginfod"
-  exit 1
+  echo " $TEST_NAME: SKIP: Could not find debuginfod"
+  end_test
+  exit $EXIT_TEST_SKIPPED
 fi
 
 if [ -z $(command -v $CURL) ]; then
-  echo "$FAIL Could not find curl"
-  exit 1
+  echo " $TEST_NAME: SKIP: Could not find curl"
+  end_test
+  exit $EXIT_TEST_SKIPPED
 fi
 
 if [ -z $(command -v $SS) ]; then
-  echo "$FAIL Could not find $SS"
-  exit 1
+  echo " $TEST_NAME: SKIP: Could not find $SS"
+  end_test
+  exit $EXIT_TEST_SKIPPED
 fi
 
 # Use the same command line options that normal spec file will use,
@@ -53,8 +68,6 @@ fi
 
 # Now add in our newly built plugin.
 OPTS+=" -fplugin=$PLUGIN"
-
-start_test
 
 echo "Build command: $GCC $OPTS"
 
@@ -84,11 +97,12 @@ PID=0
 
 cleanup()
 {
-  if [ $PID != 0]; then kill -INT $PID; wait $PID; fi
-  exit
+  if [ $PID != 0 ]; then kill -INT $PID; wait $PID; fi
+  end_test
+  exit $EXIT_TEST_FAILED
 }
 
-trap cleanup 1 2 3 5 9 15
+trap cleanup 1 2 3 5 15
 
 $DEBUGINFOD -d $DB -p $PORT -F dbg >/dev/null 2>&1 &
 PID=$!
@@ -114,14 +128,15 @@ wait_ready()
   done;
 
   if [ $timeout -eq 0 ]; then
-    echo "$FAIL metric $what never changed to $value on port $port"
+    echo " $TEST_NAME: FAIL: metric $what never changed to $value on port $port"
     $CURL -s http://127.0.0.1:$port/metrics
 
     if [ $PID != 0 ]; then
       kill -INT $PID; wait $PID;
     fi
 
-    exit 1;
+    end_test
+    exit $EXIT_TEST_FAILED
   fi
 }
 
@@ -133,24 +148,24 @@ wait_ready $PORT 'thread_busy{role="scan"}' 0
 
 export DEBUGINFOD_URLS=http://127.0.0.1:$PORT
 
-$ANNOCHECK -v -v --ignore-gaps --skip-entry --skip-property-note --skip-cf-protection --suppress-version-warnings debuginfod-test.exe > debuginfod-test.out
+$ANNOCHECK -v -v --ignore-gaps --skip-entry --skip-property-note --skip-cf-protection --suppress-version-warnings debuginfod-test.exe > $A_OUT
 
 if [ $PID != 0 ]; then kill -INT $PID; wait $PID; fi
 
 # FAIL if separate debuginfo is not found in client cache (and debuginfod support was enabled).
 # Note - with newer versions of annocheck the debuginfod server is contacted via the libdwfl
 # library, so there are no longer any messages about opening separate debug info files.
-grep --silent \
-     -e "Opened separate debug file: .*debuginfod_cache" \
+grep -q -e "Opened separate debug file: .*debuginfod_cache" \
      -e "support for debuginfod not built into annocheck" \
      -e "DW_AT_producer" \
-     debuginfod-test.out
+     $A_OUT
 if [ $? != 0 ]; then
-  echo "$FAIL separate debuginfo not found:"
+  echo " $TEST_NAME: FAIL: separate debuginfo not found:"
   echo " "
   echo "Test Log Contains:"
-  cat debuginfod-test.out
-  exit 1
+  cat $A_OUT
+  end_test
+  exit $EXIT_TEST_FAILED
 fi
 
 end_test

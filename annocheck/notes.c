@@ -23,7 +23,7 @@ typedef struct local_note
 {
   ulong         start;
   ulong         end;
-  uint          value;
+  ulong         value;
   const char *  data;
   bool          open;
 } local_note;
@@ -44,9 +44,14 @@ static bool          string_notes_seen = false;
 static bool
 notes_start_file (annocheck_data * data)
 {
+  string_notes_seen = false;
+
   if (data->is_32bit)
     {
       Elf32_Ehdr * hdr = elf32_getehdr (data->elf);
+
+      if (hdr == NULL)
+	return false;
 
       e_type = hdr->e_type;
       e_machine = hdr->e_machine;
@@ -56,13 +61,14 @@ notes_start_file (annocheck_data * data)
     {
       Elf64_Ehdr * hdr = elf64_getehdr (data->elf);
 
+      if (hdr == NULL)
+	return false;
+
       e_type = hdr->e_type;
       e_machine = hdr->e_machine;
       is_little_endian = hdr->e_ident[EI_DATA] != ELFDATA2MSB;
     }
 
-  string_notes_seen = false;
-  
   return true;
 }
 
@@ -89,7 +95,7 @@ record_new_range (ulong start, ulong end)
 #define RANGE_ALLOC_DELTA    32
 
 static void
-record_note (uint value, const char * data, bool open)
+record_note (ulong value, const char * data, bool open)
 {
   if (num_saved_notes >= num_allocated_notes)
     {
@@ -129,7 +135,7 @@ notes_walk (annocheck_data *     data,
 
   if (note->n_namesz < 3)
     {
-      einfo (FAIL, "%s: Corrupt annobin note, name size: %x", data->filename, note->n_namesz);
+      einfo (FAIL, "%s: Corrupt annobin note, name size too small: %#x", data->filename, note->n_namesz);
       return false;
     }
 
@@ -137,6 +143,14 @@ notes_walk (annocheck_data *     data,
     {
       ulong start = 0;
       ulong end = 0;
+
+      if (data_offset + note->n_descsz > sec->data->d_size)
+	{
+	  einfo (FAIL, "%s: Corrupt annobin note, desc data extends past section end",
+		 data->filename);
+	  return false;
+	}
+
       const unsigned char * descdata = sec->data->d_buf + data_offset;
 
       /* FIXME: Should we add support for earlier versions of
@@ -189,7 +203,7 @@ notes_walk (annocheck_data *     data,
 	}
       else
 	{
-	  einfo (FAIL, "%s: Corrupt annobin note, desc size: %x",
+	  einfo (FAIL, "%s: Corrupt annobin note, desc size: %#x (not 8 or 16)",
 		 data->filename, note->n_descsz);
 	  return false;
 	}
@@ -210,6 +224,13 @@ notes_walk (annocheck_data *     data,
       record_new_range (start, end);
     }
 
+  if (name_offset + note->n_namesz > sec->data->d_size)
+    {
+      einfo (FAIL, "%s: Corrupt annobin note, name data extends past section end",
+	     data->filename);
+      return false;
+    }
+
   const char *  namedata = sec->data->d_buf + name_offset;
   uint          pos = (namedata[0] == 'G' ? 3 : 1);
   char          attr_type = namedata[pos - 1];
@@ -219,10 +240,13 @@ notes_walk (annocheck_data *     data,
   if (! isprint (* attr))
     pos ++;
   else
-    pos += strlen (namedata + pos) + 1;
+    {
+      uint remaining = note->n_namesz > pos ? note->n_namesz - pos : 0;
+      pos += strnlen (namedata + pos, remaining) + 1;
+    }
 
   const char *  string = namedata + pos;
-  uint          value = -1;
+  ulong         value = -1;
 
   switch (attr_type)
     {
@@ -232,8 +256,9 @@ notes_walk (annocheck_data *     data,
 	int bytes = (namedata + note->n_namesz) - string;
 
 	value = 0;
-	if (bytes > 0)
-	  bytes --;
+	if (bytes <= 0)
+	  break;
+	bytes --;
 	while (bytes --)
 	  {
 	    uint byte = (* string ++) & 0xff;
@@ -265,11 +290,11 @@ notes_walk (annocheck_data *     data,
 }
 
 static bool
-display_GOW_values (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
+display_GOW_values (ulong value, const char * ptr ATTRIBUTE_UNUSED)
 {
   einfo (PARTIAL, "GOW data: ");
 
-  if (value == (unsigned long) -1)
+  if (value == (ulong) -1)
     {
       einfo (PARTIAL, "*unknown (-1)*\n");
       return false;
@@ -277,46 +302,83 @@ display_GOW_values (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
 
   einfo (PARTIAL, "[0x%lx]: ", value);
 
-  /* FIXME: Display G and W data...  */
+  if (BE_VERBOSE)
+    {
+      unsigned int debug_type  = value & GOW_BITMASK_DEBUG_TYPE;
+      unsigned int gnu_extn    = value & GOW_BIT_DEBUG_GNU;
+      unsigned int debug_level = (value >> GOW_BITSTART_DEBUG_LEVEL) & GOW_BITMASK_DEBUG_LEVEL;
+      unsigned int dwarf_ver   = (value >> GOW_BITSTART_DWARF_LEVEL) & GOW_BITMASK_DWARF_LEVEL;
+
+      switch (debug_type)
+	{
+	case 0:  einfo (PARTIAL, "no debug info, "); break;
+	case 1:  einfo (PARTIAL, "VMS debug info, "); break;
+	case 2:  einfo (PARTIAL, "DWARF debug info, "); break;
+	case 4:  einfo (PARTIAL, "CTF debug info, "); break;
+	default: einfo (PARTIAL, "multiple or unsupported debug types: %u, ", debug_type); break;
+	}
+
+      if (gnu_extn)
+	einfo (PARTIAL, "with GNU extensions, ");
+
+      switch (debug_level)
+	{
+	case 0:  einfo (PARTIAL, "-g0, "); break;
+	case 1:  einfo (PARTIAL, "-g1, "); break;
+	case 2:  einfo (PARTIAL, "-g2, "); break;
+	case 3:  einfo (PARTIAL, "-g3, "); break;
+	}
+
+      if (dwarf_ver > 0)
+	einfo (PARTIAL, "DWARF v%u, ", dwarf_ver);
+    }
+  else
+    {
+      if ((value & GOW_BITMASK_DEBUG_TYPE) == 0
+	  || ((value >> GOW_BITSTART_DEBUG_LEVEL) & GOW_BITMASK_DEBUG_LEVEL) == 0)
+	einfo (PARTIAL, "no debug info, ");
+    }
+
+  ulong opt_val = (value >> GOW_BITSTART_OPT_LEVEL) & GOW_BITMASK_OPT_LEVEL;
 
   if (BE_VERBOSE)
-    einfo (PARTIAL, "-O%ld, ", (value >> 9) & 3);
-  else if (((value >> 9) & 3) < 2)
-    einfo (PARTIAL, "-O%ld (too low), ", (value >> 9) & 3);
+    einfo (PARTIAL, "-O%ld, ", opt_val);
+  else if (opt_val < 2)
+    einfo (PARTIAL, "-O%ld (too low), ", opt_val);
 
   if (BE_VERBOSE)
     {
-      if (value & (1 << 11))
+      if (value & GOW_BIT_OS)
 	einfo (PARTIAL, "-Os, ");
 
-      if (value & (1 << 12))
+      if (value & GOW_BIT_OFAST)
 	einfo (PARTIAL, "-Ofast, ");
 
-      if (value & (1 << 13))
+      if (value & GOW_BIT_OG)
 	einfo (PARTIAL, "-Og, ");
     }
 
   if (BE_VERBOSE)
     {
-      if (value & (1 << 14))
+      if (value & GOW_BIT_WALL)
 	einfo (PARTIAL, "-Wall, ");
 
-      if (value & (1 << 15))
+      if (value & GOW_BIT_WFS)
 	einfo (PARTIAL, "-Wformat-security, ");
     }
-  if ((value & (3 << 14)) == 0)
+  if ((value & (GOW_BIT_WALL | GOW_BIT_WFS)) == 0)
     einfo (PARTIAL, "-Wall/-Wformat-security not used, ");
-	   
+
   if (BE_VERBOSE)
     {
-      if (value & (1 << 16))
+      if (value & GOW_BIT_LTO)
 	einfo (PARTIAL, "-flto, ");
     }
 
-  if (value & (1 << 17))
+  if (value & GOW_BIT_NO_LTO)
     einfo (PARTIAL, "-fno-lto, ");
 
-  unsigned int bits = (value >> 18) & 3;
+  ulong bits = (value >> GOW_BITSTART_AUTO_VAR) & GOW_BITMASK_AUTO_VAR;
 
   if (BE_VERBOSE)
     {
@@ -331,7 +393,7 @@ display_GOW_values (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
   else if (bits == 1)
     einfo (PARTIAL, "-ftrivial-auto-var-init=uninitialized, ");
 
-  bits = (value >> 20) & 3;
+  bits = (value >> GOW_BITSTART_ZERO_CALL) & GOW_BITMASK_ZERO_CALL;
   if (BE_VERBOSE)
     {
       switch (bits)
@@ -345,7 +407,7 @@ display_GOW_values (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
   else if (bits == 1)
     einfo (PARTIAL, "-fzero-call-used-regs=skip, ");
 
-  bits = (value >> 22) & 3;
+  bits = (value >> GOW_BITSTART_IMPLICIT_INT) & GOW_BITMASK_IMPLICIT_INT;
   if (BE_VERBOSE)
     {
       switch (bits)
@@ -359,7 +421,7 @@ display_GOW_values (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
   else if (bits == 1)
     einfo (PARTIAL, "-Wimplicit-int not enabled, ");
 
-  bits = (value >> 24) & 3;
+  bits = (value >> GOW_BITSTART_IMPLICIT_FUNC) & GOW_BITMASK_IMPLICIT_FUNC;
   if (BE_VERBOSE)
     {
       switch (bits)
@@ -373,7 +435,7 @@ display_GOW_values (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
   else if (bits == 1)
     einfo (PARTIAL, "-Wimplicit-function-declaration not enabled, ");
 
-  bits = (value >> 26) & 7;
+  bits = value & (GOW_BIT_FLEX_ARRAY | GOW_BIT_WARN_FLEX | GOW_BIT_STRICT_FLEX);
   if (BE_VERBOSE)
     {
       switch (bits)
@@ -381,28 +443,29 @@ display_GOW_values (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
 	case 0:
 	  einfo (PARTIAL, "compiler does not support flexible array hardening, ");
 	  break;
-	case 2:
-	case 4:
-	case 6:
-	  einfo (PARTIAL, "corrupt flexible array hardening data, ");
-	  break;
 
-	case 1:
+	case GOW_BIT_FLEX_ARRAY:
 	  einfo (PARTIAL, "neither -fstrict-flex-arrays nor -Wstrict-flex-arrays enabled, ");
 	  break;
-	case 3:
+	case (GOW_BIT_FLEX_ARRAY | GOW_BIT_WARN_FLEX):
 	  einfo (PARTIAL, "-Wstrict-flex-arrays enabled, -fstrict-flex-arrays not enabled, ");
 	  break;
-	case 5:
+	case (GOW_BIT_FLEX_ARRAY | GOW_BIT_STRICT_FLEX):
 	  einfo (PARTIAL, "-Wstrict-flex-arrays disabled, -fstrict-flex-arrays enabled, ");
 	  break;
-	case 7:
+	case (GOW_BIT_FLEX_ARRAY | GOW_BIT_WARN_FLEX | GOW_BIT_STRICT_FLEX):
 	  einfo (PARTIAL, "both -fstrict-flex-arrays and -Wstrict-flex-arrays enabled, ");
+	  break;
+
+	case GOW_BIT_WARN_FLEX:
+	case GOW_BIT_STRICT_FLEX:
+	case (GOW_BIT_WARN_FLEX | GOW_BIT_STRICT_FLEX):
+	  einfo (PARTIAL, "corrupt flexible array hardening data, ");
 	  break;
 	}
     }
-  else if (bits == 1)
-    einfo (PARTIAL, "neither -fstrict-flex-arrays nor -Wstrict-flex-arrays enabled, ");
+  else if (bits == GOW_BIT_FLEX_ARRAY)
+    einfo (PARTIAL, "flex arrays supported but neither -fstrict-flex-arrays nor -Wstrict-flex-arrays enabled, ");
 
   if (value & (-1U << 29))
     einfo (PARTIAL, "*unknown* ");
@@ -413,29 +476,29 @@ display_GOW_values (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
 }
 
 static bool
-display_annobin_version (unsigned long value ATTRIBUTE_UNUSED, const char * ptr)
+display_annobin_version (ulong value ATTRIBUTE_UNUSED, const char * ptr)
 {
   einfo (PARTIAL, "annobin version: %s\n", ptr);
   return false;
 }
 
 static bool
-display_build_version (unsigned long value ATTRIBUTE_UNUSED, const char * ptr)
+display_build_version (ulong value ATTRIBUTE_UNUSED, const char * ptr)
 {
   einfo (PARTIAL, "plugin built by: %s\n", ptr);
   return false;
 }
 
 static bool
-display_control_flow (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
+display_control_flow (ulong value, const char * ptr ATTRIBUTE_UNUSED)
 {
   einfo (PARTIAL, "Control Flow Protection: ");
   switch (value)
     {
     default:
-      einfo (PARTIAL, "*unknown (%ld)*\n", value); break;
+      einfo (PARTIAL, "*unknown (%#lx)*\n", value); break;
     case 0:
-    case 4: 
+    case 4:
     case 8:
       einfo (PARTIAL, "Full\n"); break;
     case 2:
@@ -453,7 +516,7 @@ display_control_flow (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
 }
 
 static bool
-display_fortify_level (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
+display_fortify_level (ulong value, const char * ptr ATTRIBUTE_UNUSED)
 {
   einfo (PARTIAL, "FORTIFY: ");
   switch (value)
@@ -462,7 +525,7 @@ display_fortify_level (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
     case -2UL:
       einfo (PARTIAL, "Hidden by LTO compilation\n"); break;
     default:
-      einfo (PARTIAL, "*unknown (%ld)*\n", value); break;
+      einfo (PARTIAL, "*unknown (%#lx)*\n", value); break;
     case 255:
     case -1UL:
       einfo (PARTIAL, "Not Set\n"); break;
@@ -476,11 +539,11 @@ display_fortify_level (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
 }
 
 static bool
-display_frame_pointer (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
+display_frame_pointer (ulong value, const char * ptr ATTRIBUTE_UNUSED)
 {
   switch (value)
     {
-    default: einfo (PARTIAL, "Omit Frame Pointer: *unknown (%ld)*\n", value); break;
+    default: einfo (PARTIAL, "Omit Frame Pointer: *unknown (%#lx)*\n", value); break;
     case 0:  einfo (PARTIAL, "Omit Frame Pointer: No\n"); break;
     case 1:  einfo (PARTIAL, "Omit Frame Pointer: Yes\n"); break;
     }
@@ -488,7 +551,7 @@ display_frame_pointer (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
 }
 
 static bool
-display_assertions (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
+display_assertions (ulong value, const char * ptr ATTRIBUTE_UNUSED)
 {
   einfo (PARTIAL, "GLIBCXX_ASSERTIONS: ");
   switch (value)
@@ -496,24 +559,24 @@ display_assertions (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
     case 0: einfo (PARTIAL, "Not defined\n"); break;
     case 1: einfo (PARTIAL, "Defined\n"); break;
     case -1UL: einfo (PARTIAL, "Not Set\n"); break;
-    default: einfo (PARTIAL, "*unknown (%lu)*\n", value); break;
+    default: einfo (PARTIAL, "*unknown (%#lx)*\n", value); break;
     }
   return true;
 }
 
 static bool
-display_profiling (unsigned long value ATTRIBUTE_UNUSED, const char * ptr)
+display_profiling (ulong value ATTRIBUTE_UNUSED, const char * ptr)
 {
   einfo (PARTIAL, "profiling: %s\n", ptr);
   return false;
 }
 
 static bool
-display_pic (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
+display_pic (ulong value, const char * ptr ATTRIBUTE_UNUSED)
 {
   switch (value)
     {
-    default: einfo (PARTIAL, "PIC: *unknown (%ld)*\n", value); break;
+    default: einfo (PARTIAL, "PIC: *unknown (%#lx)*\n", value); break;
     case 0:  einfo (PARTIAL, "PIC: none\n"); break;
     case 1:
     case 2:  einfo (PARTIAL, "PIC: -fpic\n"); break;
@@ -524,21 +587,21 @@ display_pic (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
 }
 
 static bool
-display_plugin_name (unsigned long value ATTRIBUTE_UNUSED, const char * ptr)
+display_plugin_name (ulong value ATTRIBUTE_UNUSED, const char * ptr)
 {
   einfo (PARTIAL, "plugin: %s\n", ptr);
   return false;
 }
 
 static bool
-display_run_version (unsigned long value ATTRIBUTE_UNUSED, const char * ptr)
+display_run_version (ulong value ATTRIBUTE_UNUSED, const char * ptr)
 {
   einfo (PARTIAL, "plugin run on:   %s\n", ptr);
   return false;
 }
 
 static bool
-display_stack_clash (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
+display_stack_clash (ulong value, const char * ptr ATTRIBUTE_UNUSED)
 {
   einfo (PARTIAL, "Stack Clash Protection: ");
   switch (value)
@@ -548,59 +611,59 @@ display_stack_clash (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
       einfo (PARTIAL, "Enabled\n");
       break;
     case 0: einfo (PARTIAL, "Not enabled\n"); break;
-    default: einfo (PARTIAL, "*unknown (%lu)*\n", value); break;
+    default: einfo (PARTIAL, "*unknown (%#lx)*\n", value); break;
     }
   return true;
 }
 
 static bool
-display_short_enums (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
+display_short_enums (ulong value, const char * ptr ATTRIBUTE_UNUSED)
 {
   switch (value)
     {
     case 1:  einfo (PARTIAL, "Short Enums: Used\n"); break;
     case 0:  einfo (PARTIAL, "Short Enums: Not Used\n"); break;
-    default: einfo (PARTIAL, "Short Enums: *unknown (%ld)*\n", value); break;
+    default: einfo (PARTIAL, "Short Enums: *unknown (%#lx)*\n", value); break;
     }
   return true;
 }
 
 static bool
-display_stack_protection (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
+display_stack_protection (ulong value, const char * ptr ATTRIBUTE_UNUSED)
 {
   switch (value)
     {
-    default: einfo (PARTIAL, "Stack Protection: *unknown (%ld)*\n", value); break;
+    default: einfo (PARTIAL, "Stack Protection: *unknown (%#lx)*\n", value); break;
     case 0:  einfo (PARTIAL, "Stack Protection: None\n"); break;
     case 1:  einfo (PARTIAL, "Stack Protection: Basic\n"); break;
-    case 4:  einfo (PARTIAL, "Stack Protection: Explicit\n"); break;
     case 2:  einfo (PARTIAL, "Stack Protection: All\n"); break;
     case 3:  einfo (PARTIAL, "Stack Protection: Strong\n"); break;
+    case 4:  einfo (PARTIAL, "Stack Protection: Explicit\n"); break;
     }
   return true;
 }
 
 static bool
-display_abi_aarch64 (unsigned long value ATTRIBUTE_UNUSED, const char * ptr)
+display_abi_aarch64 (ulong value ATTRIBUTE_UNUSED, const char * ptr)
 {
   einfo (PARTIAL, "AArch64 ABI: %s\n", ptr);
   return false;
 }
 
 static bool
-display_bti_aarch64 (unsigned long value ATTRIBUTE_UNUSED, const char * ptr)
+display_bti_aarch64 (ulong value ATTRIBUTE_UNUSED, const char * ptr)
 {
   einfo (PARTIAL, "AArch64 branch protection: %s\n", ptr);
   return false;
 }
 
 static bool
-display_stack_realign (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
+display_stack_realign (ulong value, const char * ptr ATTRIBUTE_UNUSED)
 {
   einfo (PARTIAL, "Stack Realign: ");
   switch (value)
     {
-    default: einfo (PARTIAL, "*unknown (%ld)*\n", value); break;
+    default: einfo (PARTIAL, "*unknown (%#lx)*\n", value); break;
     case 0:  einfo (PARTIAL, "Not enabled\n"); break;
     case 1:  einfo (PARTIAL, "Enabled\n"); break;
     }
@@ -608,14 +671,14 @@ display_stack_realign (unsigned long value, const char * ptr ATTRIBUTE_UNUSED)
 }
 
 static bool
-display_abi_ppc64 (unsigned long value ATTRIBUTE_UNUSED, const char * ptr)
+display_abi_ppc64 (ulong value ATTRIBUTE_UNUSED, const char * ptr)
 {
   einfo (PARTIAL, "PPC64 ABI: %s\n", ptr);
   return false;
 }
 
 static bool
-display_abi_x86_64 (unsigned long value ATTRIBUTE_UNUSED, const char * ptr)
+display_abi_x86_64 (ulong value ATTRIBUTE_UNUSED, const char * ptr)
 {
   einfo (PARTIAL, "x86_64 ABI: %s\n", ptr);
   return false;
@@ -624,11 +687,12 @@ display_abi_x86_64 (unsigned long value ATTRIBUTE_UNUSED, const char * ptr)
 static struct annobin_string_checker
 {
   char      letters[2];
-  bool (*   func)(unsigned long, const char *); // Returns TRUE if there could be a filename to display
+  bool (*   func)(ulong, const char *); // Returns TRUE if there could be a filename to display
 }
   annobin_string_checkers [] =
 {
-  /* Table alpha-sorted for convenience.  */
+  /* Table is sorted alphabetically by the two-letter key
+     so that bsearch can be used for lookups.  */
   { ANNOBIN_STRING_ANNOBIN_VERSION,    display_annobin_version },
   { ANNOBIN_STRING_BUILD_VERSION,      display_build_version },
   { ANNOBIN_STRING_CONTROL_FLOW,       display_control_flow },
@@ -650,6 +714,17 @@ static struct annobin_string_checker
   { ANNOBIN_STRING_X86_64_ABI,         display_abi_x86_64 }
 };
 
+static int
+compare_string_checker (const void * key, const void * entry)
+{
+  const char * k = (const char *) key;
+  const struct annobin_string_checker * e = (const struct annobin_string_checker *) entry;
+
+  if (k[0] != e->letters[0])
+    return k[0] - e->letters[0];
+  return k[1] - e->letters[1];
+}
+
 static bool
 check_annobin_string_section (annocheck_data *    data,
 			      annocheck_section * sec)
@@ -662,7 +737,7 @@ check_annobin_string_section (annocheck_data *    data,
       einfo (ERROR, "annobin string note section is too small");
       return false;
     }
-  
+
   string_notes_seen = true;
   einfo (INFO, "displaying string notes for %s", data->full_filename);
 
@@ -678,48 +753,48 @@ check_annobin_string_section (annocheck_data *    data,
 	}
 
       const char * next_ptr;
-      
+
       /* Find the start of the next string.  */
       for (next_ptr = ptr; next_ptr < end; next_ptr ++)
 	if (* next_ptr == 0)
 	  break;
 
-      if (* next_ptr != 0)
+      if (next_ptr >= end)
 	{
 	  einfo (INFO, "ICE: unterminated string in annobin string notes");
 	  return false;
 	}
 
-      int i;
+      char key[2] = { first_letter, second_letter };
+      struct annobin_string_checker * found;
 
-      /* FIXME: This lookup could be optimized a lot more...  */
-      for (i = ARRAY_SIZE (annobin_string_checkers); i--;)
-	if (annobin_string_checkers[i].letters[0] == first_letter
-	    && annobin_string_checkers[i].letters[1] == second_letter)
-	  {
-	    einfo (PARTIAL, "  %c%c: ", first_letter, second_letter);
+      found = bsearch (key, annobin_string_checkers,
+		       ARRAY_SIZE (annobin_string_checkers),
+		       sizeof annobin_string_checkers[0],
+		       compare_string_checker);
 
-	    unsigned long value = strtoul (ptr, NULL, 0);
+      if (found != NULL)
+	{
+	  einfo (PARTIAL, "  %c%c: ", first_letter, second_letter);
 
-	    if (annobin_string_checkers[i].func (value, ptr))
-	      {
-		/* For certain strings, if a name follows the note, it is
-		   the filename (and optionally the function name) of
-		   the non-conforming file.  */
-		const char * space = strchr (ptr, ' ');
+	  ulong value = strtoul (ptr, NULL, 0);
 
-		if (space != NULL)
-		  {
-		    /* The gcc-plugin is not always able to record a filename.  */
-		    if (! streq (space + 1, "/dev/null"))
-		      einfo (PARTIAL, "    [file: %s]\n", space + 1);
-		  }
-	      }
+	  if (found->func (value, ptr))
+	    {
+	      /* For certain strings, if a name follows the note, it is
+		 the filename (and optionally the function name) of
+		 the non-conforming file.  */
+	      const char * space = strchr (ptr, ' ');
 
-	    break;
-	  }
-
-      if (i == -1)
+	      if (space != NULL)
+		{
+		  /* The gcc-plugin is not always able to record a filename.  */
+		  if (! streq (space + 1, "/dev/null"))
+		    einfo (PARTIAL, "    [file: %s]\n", space + 1);
+		}
+	    }
+	}
+      else
 	{
 	  einfo (INFO, "ICE: unrecognized annobin string note");
 	  einfo (VERBOSE, "debug: unrecognized annobin string note: %c%c", first_letter, second_letter);
@@ -802,7 +877,7 @@ display_elf_notes (annocheck_data * data)
 	einfo (PARTIAL, "[O] ");
       else
 	einfo (PARTIAL, "[F] ");
-      
+
       uint value = note->value;
 
       switch (note->data[0])
@@ -872,21 +947,21 @@ display_elf_notes (annocheck_data * data)
 	  if (const_strneq (note->data, "branch_protection:"))
 	    (void) display_bti_aarch64 (0, note->data + strlen ("branch_protection:"));
 	  else
-	    einfo (PARTIAL, "Unknown b-type note: '%s', value %d\n", note->data, note->value);
+	    einfo (PARTIAL, "Unknown b-type note: '%s', value %ld\n", note->data, note->value);
 	  break;
-	  
+
 	case 'c':
 	  if (streq (note->data, "cf_protection"))
 	    (void) display_control_flow (value, NULL);
 	  else
-	    einfo (PARTIAL, "Unknown c-type note: '%s', value %d\n", note->data, note->value);
+	    einfo (PARTIAL, "Unknown c-type note: '%s', value %ld\n", note->data, note->value);
 	  break;
 
 	case 'F':
 	  if (streq (note->data, "FORTIFY"))
 	    (void) display_fortify_level (value, NULL);
 	  else
-	    einfo (PARTIAL, "Unknown F-type note: '%s', value %d\n", note->data, note->value);
+	    einfo (PARTIAL, "Unknown F-type note: '%s', value %ld\n", note->data, note->value);
 	  break;
 
 	case 'G':
@@ -897,7 +972,7 @@ display_elf_notes (annocheck_data * data)
 	  else if (streq (note->data, "GLIBCXX_ASSERTIONS") || streq (note->data, "GLIBCXX_ASSER"))
 	    (void) display_assertions (value, NULL);
 	  else
-	    einfo (PARTIAL, "Unknown G-type note: '%s', value %d\n", note->data, note->value);
+	    einfo (PARTIAL, "Unknown G-type note: '%s', value %ld\n", note->data, note->value);
 	  break;
 
 	case 'I':
@@ -920,14 +995,14 @@ display_elf_notes (annocheck_data * data)
 		}
 	    }
 	  else
-	    einfo (PARTIAL, "Unknown I-type note: '%s', value %d\n", note->data, note->value);
+	    einfo (PARTIAL, "Unknown I-type note: '%s', value %ld\n", note->data, note->value);
 	  break;
-	  
+
 	case 'o':
 	  if (streq (note->data, "omit_frame_pointer"))
 	    (void) display_frame_pointer (value, NULL);
 	  else
-	    einfo (PARTIAL, "Unknown o-type note: '%s', value %d\n", note->data, note->value);
+	    einfo (PARTIAL, "Unknown o-type note: '%s', value %ld\n", note->data, note->value);
 	  break;
 
 	case 's':
@@ -952,14 +1027,29 @@ display_elf_notes (annocheck_data * data)
 		einfo (PARTIAL, "enabled\n");
 	    }
 	  else
-	    einfo (PARTIAL, "Unknown s-type note: '%s', value %d\n", note->data, note->value);
+	    einfo (PARTIAL, "Unknown s-type note: '%s', value %ld\n", note->data, note->value);
+	  break;
+
+	case 'S':
+	  if (streq (note->data, "SpecLoadHarden"))
+	    {
+	      switch (value)
+		{
+		case 0:  einfo (PARTIAL, "not set\n"); break;
+		case 1:  einfo (PARTIAL, "disabled\n"); break;
+		case 2:  einfo (PARTIAL, "enabled\n"); break;
+		default: einfo (PARTIAL, "unknown\n"); break;
+		}
+	    }
+	  else
+	    einfo (PARTIAL, "Unknown S-type note: '%s', value %ld\n", note->data, note->value);
 	  break;
 
 	default:
 	  if (isascii (note->data[0]))
-	    einfo (PARTIAL, "Unknown note type: '%s', value %d\n", note->data, note->value);
+	    einfo (PARTIAL, "Unknown note type: '%s', value %ld\n", note->data, note->value);
 	  else
-	    einfo (PARTIAL, "Unknown note type: '0x%x', value %d\n", note->data[0], note->value);
+	    einfo (PARTIAL, "Unknown note type: '0x%x', value %ld\n", note->data[0], note->value);
 	  break;
 	}
     }
@@ -1043,7 +1133,7 @@ notes_process_arg (const char * arg, const char ** argv ATTRIBUTE_UNUSED, const 
     ++ arg;
   if (arg[0] == '-')
     ++ arg;
-  
+
   if (streq (arg, "enable-notes") || streq (arg, "enable"))
     disabled = false;
 
@@ -1072,7 +1162,7 @@ notes_version (int level)
     einfo (INFO, "Version 2.0");
 }
 
-struct checker notes_checker = 
+struct checker notes_checker =
 {
   NOTES_CHECKER_NAME,
   NULL,  /* altname */
@@ -1091,7 +1181,7 @@ struct checker notes_checker =
 };
 
 static __attribute__((constructor)) void
-notes_register_checker (void) 
+notes_register_checker (void)
 {
   if (! annocheck_add_checker (& notes_checker, (int) ANNOBIN_VERSION))
     disabled = true;

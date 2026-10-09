@@ -116,6 +116,83 @@ extern "C" {
 #define ANNOBIN_STRING_PPC64_ABI           "pA"
 #define ANNOBIN_STRING_X86_64_ABI          "xA"
 
+/* Bit field values for the GOW attribute:
+
+   bits  0, 2 : debug type (from enum debug_info_type)
+   bit   3      : with GNU extensions
+   bits  4, 5 : debug level (from enum debug_info_levels)
+   bits  6, 8 : DWARF version level
+   bits  9,10 : optimization level
+   bit  11    : -Os
+   bit  12    : -Ofast
+   bit  13    : -Og
+   bit  14    : -Wall
+   bit  15    : -Wformat-security
+   bit  16    : LTO enabled
+   bit  17    : LTO disabled.
+   bits 18,19 : -ftrivial-auto-var-init
+                  0 -> not supported by the compiler
+		  1 -> supported but not used or set to 'uninitialized'
+		  2 -> set to 'pattern' (which is bad for production binaries)
+		  3 -> set to 'zero'
+   bits 20,21 : -fzero-call-used-regs
+                  0 -> not supported by the compiler
+		  1 -> supported but not used or set to 'skip'
+		  2 -> not used.
+		  3 -> supported and set to some class(es) of call used registers,
+   bits 22,23 : -Wimplicit-int
+                  0 -> not recorded by annocheck plugin
+		  1 -> recorded by annocheck, option not enabled
+		  2 -> recorded by annocheck, option has "default" value.
+		  3 -> recorded by annocheck, option enabled
+   bits 24,25 : -Wimplicit-function-declaration
+                  0 -> not recorded by annocheck plugin
+		  1 -> recorded by annocheck, option not enabled
+		  2 -> recorded by annocheck, option has "default" value.
+		  3 -> recorded by annocheck, option enabled
+   bit 26     : flex array bits in use
+       27     : -Wstrict-flex-arrays
+       28     : -fstrict-flex-arrays > 0
+
+   bits 29..31: Not currently used.  Should be zero.
+*/
+
+#define GOW_BITSTART_DEBUG_TYPE    0
+#define GOW_BITMASK_DEBUG_TYPE     0b111
+#define GOW_BIT_DEBUG_GNU          (1 << 3)
+#define GOW_BITSTART_DEBUG_LEVEL   4
+#define GOW_BITMASK_DEBUG_LEVEL    0b11
+#define GOW_BITSTART_DWARF_LEVEL   6
+#define GOW_BITMASK_DWARF_LEVEL    0b111
+#define GOW_BITSTART_OPT_LEVEL     9
+#define GOW_BITMASK_OPT_LEVEL      0b11
+#define GOW_BIT_OS                 (1 << 11)
+#define GOW_BIT_OFAST              (1 << 12)
+#define GOW_BIT_OG                 (1 << 13)
+#define GOW_BIT_WALL               (1 << 14)
+#define GOW_BIT_WFS                (1 << 15)
+#define GOW_BIT_LTO                (1 << 16)
+#define GOW_BIT_NO_LTO             (1 << 17)
+#define GOW_BITSTART_AUTO_VAR      18
+#define GOW_BITMASK_AUTO_VAR       0b11
+#define GOW_BITSTART_ZERO_CALL     20
+#define GOW_BITMASK_ZERO_CALL      0b11
+#define GOW_BITSTART_IMPLICIT_INT  22
+#define GOW_BITMASK_IMPLICIT_INT   0b11
+#define GOW_BITSTART_IMPLICIT_FUNC 24
+#define GOW_BITMASK_IMPLICIT_FUNC  0b11
+#define GOW_BIT_FLEX_ARRAY         (1 << 26)
+#define GOW_BIT_WARN_FLEX          (1 << 27)
+#define GOW_BIT_STRICT_FLEX        (1 << 28)
+
+/* Utility macros to extract fields from a GOW value.  */
+#define GOW_DEBUG_LEVEL(GOW)       (((GOW) >> GOW_BITSTART_DEBUG_LEVEL) & GOW_BITMASK_DEBUG_LEVEL)
+#define GOW_OPT_LEVEL(GOW)         (((GOW) >> GOW_BITSTART_OPT_LEVEL) & GOW_BITMASK_OPT_LEVEL)
+#define GOW_AUTO_VAR(GOW)          (((GOW) >> GOW_BITSTART_AUTO_VAR) & GOW_BITMASK_AUTO_VAR)
+#define GOW_ZERO_CALL(GOW)         (((GOW) >> GOW_BITSTART_ZERO_CALL) & GOW_BITMASK_ZERO_CALL)
+#define GOW_IMPLICIT_INT(GOW)      (((GOW) >> GOW_BITSTART_IMPLICIT_INT) & GOW_BITMASK_IMPLICIT_INT)
+#define GOW_IMPLICIT_FUNC(GOW)     (((GOW) >> GOW_BITSTART_IMPLICIT_FUNC) & GOW_BITMASK_IMPLICIT_FUNC)
+  
 /* Utlity macros to make the code cleaner.  */
 #define streq(a,b)	  (strcmp ((a), (b)) == 0)
 #define strneq(a,b,n)	  (strncmp ((a), (b), (n)) == 0)

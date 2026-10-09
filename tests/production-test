@@ -1,0 +1,130 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck detects non-production binaries via --test-production.
+# Checks:
+#  1. A normal binary passes the production test.
+#  2. DT_DEPAUDIT causes a MAYB.
+#  3. DT_AUDIT causes a MAYB.
+
+TEST_NAME=production
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+
+start_test
+
+# Compile test object files
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello_lib.c
+
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test files"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+SKIPS="--skip-all --test-production --suppress-version-warnings"
+A_OUT=production-test.out
+result=0
+
+# ---------------------------------------------------------------
+# Part 1: A normal binary should PASS the production test.
+# ---------------------------------------------------------------
+
+EXE=production-pass.exe
+
+$GCC hello.o hello2.o hello3.o hello_lib.o -pie -Wl,-z,now,-z,relro -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link test executable:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+$ANNOCHECK $EXE --verbose $SKIPS > $A_OUT
+grep -q -e "PASS: production test" $A_OUT
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: FAIL: annocheck did not PASS a normal binary"
+    echo "$TEST_NAME: annocheck output:"
+    cat $A_OUT
+    result=1
+fi
+
+# ---------------------------------------------------------------
+# Part 2: A binary linked with --depaudit should produce a MAYB result.
+# ---------------------------------------------------------------
+
+EXE=production-depaudit.exe
+
+$GCC hello.o hello2.o hello3.o hello_lib.o -pie -Wl,-z,now,-z,relro -Wl,--depaudit,foo -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link test executable with --depaudit:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+$ANNOCHECK $EXE --verbose $SKIPS > $A_OUT
+grep -q -e "MAYB: test: production" $A_OUT
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: FAIL: annocheck did not detect DT_DEPAUDIT"
+    echo "$TEST_NAME: annocheck output:"
+    cat $A_OUT
+    result=1
+fi
+
+# ---------------------------------------------------------------
+# Part 3: A binary linked with --audit should get a MAYB result.
+# ---------------------------------------------------------------
+
+EXE=production-audit.exe
+
+$GCC hello.o hello2.o hello3.o hello_lib.o -pie -Wl,-z,now,-z,relro -Wl,--audit,foo -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link test executable with --audit:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+$ANNOCHECK $EXE --verbose $SKIPS > $A_OUT
+grep -q -e "MAYB: test: production" $A_OUT
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: FAIL: annocheck did not detect DT_AUDIT as a maybe"
+    echo "$TEST_NAME: annocheck output:"
+    cat $A_OUT
+    result=1
+fi
+
+# ---------------------------------------------------------------
+
+end_test
+
+if [ $result == 1 ];
+then
+    exit $EXIT_TEST_FAILED
+else
+    echo "$TEST_NAME: PASS"
+fi

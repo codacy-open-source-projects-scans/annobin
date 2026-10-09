@@ -860,11 +860,12 @@ the following tools are implemented:
 * Size::      What is the cumulative size of specific sections in the file(s) ?
 * Timing::    How long did the checks take ?
 
-   The ‘annocheck’ program is able to scan inside rpm files and
-libraries.  It will automatically recurse into any directories that are
-specified on the command line.  In addition ‘annocheck’ knows how to
-find debug information held in separate debug files, and it will search
-for these whenever it needs the resources that they contain.
+   The ‘annocheck’ program is able to scan inside rpm files, libraries,
+tarballs and zip archives.  It will automatically recurse into any
+directories that are specified on the command line.  In addition
+‘annocheck’ knows how to find debug information held in separate debug
+files, and it will search for these whenever it needs the resources that
+they contain.
 
    New tools can be added to the annocheck framework by creating a new
 source file and including it in the ‘Makefile’ used to build
@@ -1789,6 +1790,12 @@ is not recommended due to its space overhead.
    To turn on GNU RELRO compile with the gcc ‘-Wl,-z,relro,-z,now’
 option.
 
+   Note - this test is related to the *Note Test writable got:: test.
+This test checks that the GOT and PLT tables are made read-only once the
+relocations have been processed.  The WRITABLE GOT test checks that the
+relocations that are used to initialise the GOT and PLT tables cannot be
+changed.
+
    If necessary the test can be disabled via the ‘--skip-gnu-relro’
 option and re-enabled via the ‘--test-gnu-relro’ option.
 
@@ -2705,8 +2712,15 @@ their contents and thus cause the program to call the wrong functions in
 the shared libraries.
 
    Under normal circumstances this test should never fail.  If it does
-then something unusual is going on.  One possible cure is to add the
-‘-Wl,--secure-plt’ option to the final link command line.
+then something unusual is going on.  One possible cure - for PowerPC
+binaries - is to add the ‘-Wl,--secure-plt’ option to the final link
+command line.
+
+   Note - this test is related to the *Note Test gnu relro:: test.  This
+test checks that the relocations that are used to initialise the GOT and
+PLT tables cannot be changed.  The GNU RELRO test checks that the GOT
+and PLT tables are made read-only once the relocations have been
+processed.
 
    If necessary the test can be disabled via the ‘--skip-writable-got’
 option and re-enabled via the ‘--test-writable-got’ option.
@@ -3579,13 +3593,41 @@ configure options available to customise the build:
 ‘--without-tests’
      Disable running the testsuite after building the various binaries.
 
-‘--without-clang-plugin’
+‘--with-clang-plugin=no’
      Disable the building of the annobin plugin for the Clang compiler.
 
-‘--without-llvm-plugin’
+‘--without-clang-plugin’
+     An alias for ‘--with-clang-plugin=no’
+
+‘--with-clang-plugin=yes’
+     Enable the building of the annobin plugin for the Clang compiler.
+     Fails if this is not possible.
+
+‘--with-clang-plugin=auto’
+     Enable the building of the annobin plugin for the Clang compiler.
+     Does not fail if this is not possible, instead the plugin is just
+     not built.  This is the default setting for the
+     ‘--with-clang-plugin’ option.
+
+‘--with-llvm-plugin=no’
      Disable the building of the annobin plugin for the LLVM compiler
-     backend.  The LLVM plugin is separate from the Clang plugin and can
-     be used with any language that uses LLVM as a backend compiler.
+     backend.
+
+‘--without-llvm-plugin’
+     An alias for ‘--with-llvm-plugin=no’
+
+‘--with-llvm-plugin=yes’
+     Enable the building of the annobin plugin for the LLVM compiler
+     backend.  Fails if this is not possible.
+
+     The LLVM plugin is separate from the Clang plugin and can be used
+     with any language that uses LLVM as a backend compiler.
+
+‘--with-llvm-plugin=auto’
+     Enable the building of the annobin plugin for the LLVM compiler
+     backend.  Does not fail if this is not possible, instead the plugin
+     is just not built.  This is the default setting for the
+     ‘--with-llvm-plugin’ option.
 
 ‘--without-gcc-plugin’
      Do not build the gcc plugin.
@@ -4546,78 +4588,78 @@ Node: The ENUM Encoding28031
 Node: The INSTRUMENT Encoding28440
 Node: String Format Notes29687
 Node: Annocheck31772
-Node: Built By37142
-Node: Hardened41734
-Node: The tests43925
-Node: Test auto var init46435
-Node: Test bind now47740
-Node: Test branch protection49436
-Node: Test cf protection52985
-Node: Test dynamic segment57348
-Node: Test dynamic tags58492
-Node: Test entry62204
-Node: Test fast63102
-Node: Test fips64145
-Node: Test flex arrays65179
-Node: Test fortify66280
-Node: Test gaps68181
-Node: Test glibcxx assertions68950
-Node: Test gnu relro70004
-Node: Test gnu stack71757
-Node: Test go revision74167
-Node: Test implicit values75228
-Node: Test instrumentation76610
-Node: Test load segments77487
-Node: Test lto79186
-Node: Test not branch protection80302
-Node: Test not dynamic tags82528
-Node: Test notes84886
-Node: Test only go87549
-Node: Test OpenSSL Engine88715
-Node: Test optimization89811
-Node: Test pic91230
-Node: Test pie92804
-Node: Test production94113
-Node: Test property note94953
-Node: Test rhivos97441
-Node: Test run path100065
-Node: Test rwx seg102304
-Node: Test short enums102650
-Node: Test stack clash103692
-Node: Test stack prot105178
-Node: Test stack realign106531
-Node: Test textrel107821
-Node: Test threads109130
-Node: Test unicode109962
-Node: Test warnings111498
-Node: Test writable got112354
-Node: Test zero call used regs113652
-Node: Hardened Command Line Options114938
-Node: Waiving Hardened Results123853
-Node: Absence of compiled code125875
-Node: Notes132879
-Node: Size133525
-Node: Timing136243
-Node: Libannocheck136902
-Node: libannocheck_init138857
-Node: libannocheck_finish139779
-Node: libannocheck_get_version140327
-Node: libannocheck_get_error_message140740
-Node: libannocheck_get_known_tests141380
-Node: libannocheck_enable_all_tests142558
-Node: libannocheck_disable_all_tests143041
-Node: libannocheck_enable_test143601
-Node: libannocheck_disable_test144281
-Node: libannocheck_enable_profile144962
-Node: libannocheck_get_known_profiles145484
-Node: libannocheck_run_tests146187
-Node: Configure Options147036
-Node: Legacy Scripts149781
-Node: Who Built Me150564
-Node: ABI Checking153455
-Node: Hardening Checks155702
-Node: Checking Archives160050
-Node: GNU FDL162601
+Node: Built By37166
+Node: Hardened41758
+Node: The tests43949
+Node: Test auto var init46459
+Node: Test bind now47764
+Node: Test branch protection49460
+Node: Test cf protection53009
+Node: Test dynamic segment57372
+Node: Test dynamic tags58516
+Node: Test entry62228
+Node: Test fast63126
+Node: Test fips64169
+Node: Test flex arrays65203
+Node: Test fortify66304
+Node: Test gaps68205
+Node: Test glibcxx assertions68974
+Node: Test gnu relro70028
+Node: Test gnu stack72079
+Node: Test go revision74489
+Node: Test implicit values75550
+Node: Test instrumentation76932
+Node: Test load segments77809
+Node: Test lto79508
+Node: Test not branch protection80624
+Node: Test not dynamic tags82850
+Node: Test notes85208
+Node: Test only go87871
+Node: Test OpenSSL Engine89037
+Node: Test optimization90133
+Node: Test pic91552
+Node: Test pie93126
+Node: Test production94435
+Node: Test property note95275
+Node: Test rhivos97763
+Node: Test run path100387
+Node: Test rwx seg102626
+Node: Test short enums102972
+Node: Test stack clash104014
+Node: Test stack prot105500
+Node: Test stack realign106853
+Node: Test textrel108143
+Node: Test threads109452
+Node: Test unicode110284
+Node: Test warnings111820
+Node: Test writable got112676
+Node: Test zero call used regs114292
+Node: Hardened Command Line Options115578
+Node: Waiving Hardened Results124493
+Node: Absence of compiled code126515
+Node: Notes133519
+Node: Size134165
+Node: Timing136883
+Node: Libannocheck137542
+Node: libannocheck_init139497
+Node: libannocheck_finish140419
+Node: libannocheck_get_version140967
+Node: libannocheck_get_error_message141380
+Node: libannocheck_get_known_tests142020
+Node: libannocheck_enable_all_tests143198
+Node: libannocheck_disable_all_tests143681
+Node: libannocheck_enable_test144241
+Node: libannocheck_disable_test144921
+Node: libannocheck_enable_profile145602
+Node: libannocheck_get_known_profiles146124
+Node: libannocheck_run_tests146827
+Node: Configure Options147676
+Node: Legacy Scripts151399
+Node: Who Built Me152182
+Node: ABI Checking155073
+Node: Hardening Checks157320
+Node: Checking Archives161668
+Node: GNU FDL164219
 
 End Tag Table
 

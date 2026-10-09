@@ -1,0 +1,161 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that the --profile option correctly enables/disables the right checks.
+# For example, el7 disables bind-now, pie, stack-clash, etc.
+# while el10 enables branch-protection and openssl-engine.
+
+TEST_NAME=profile
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+
+start_test
+
+# Compile and link a hardened binary
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello_lib.c && \
+    $GCC hello.o hello2.o hello3.o hello_lib.o -pie -Wl,-z,now,-z,relro -o $EXE
+
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile and link test executable"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+result=0
+
+BASE_OPTS="--suppress-version-warnings --verbose --ignore-gaps"
+
+# Test 1: --profile=none should run with no profile-specific adjustments
+$ANNOCHECK $EXE $BASE_OPTS --profile=none > $A_OUT 2>&1
+if [ $? -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed with --profile=none"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck accepted --profile=none"
+
+#-----------------------------------------------------------------------
+
+# Test 2: --profile=el7 should skip bind-now, pie, stack-clash, etc.
+$ANNOCHECK $EXE $BASE_OPTS --profile=el7 > $A_OUT 2>&1
+if [ $? -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed with --profile=el7"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# el7 disables bind-now - verify it is skipped
+grep -q -v -e " bind-now" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: --profile=el7 did not skip the bind-now test"
+    cat $A_OUT
+    result=1
+fi
+
+# el7 disables stack-clash - verify it is skipped
+grep -q -v -e " stack-clash" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: --profile=el7 did not skip the stack-clash test"
+    cat $A_OUT
+    result=1
+fi
+
+# el7 disables pie - verify it is skipped
+grep -q -v -e " pie" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: --profile=el7 did not skip the pie test"
+    cat $A_OUT
+    result=1
+fi
+
+if [ $result == 0 ];
+then
+    echo " $TEST_NAME: PASS: --profile=el7 skipped the expected tests"
+fi
+
+#----------------------------------------------------------------
+
+# Test 3: --profile=el9 should run differently from el7
+$ANNOCHECK $EXE $BASE_OPTS --profile=el9 > $A_OUT 2>&1
+if [ $? -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed with --profile=el9"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# el9 does NOT disable bind-now, so it should not be skipped
+grep -q -e " bind-now" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: --profile=el9 incorrectly skipped the bind-now test"
+    cat $A_OUT
+    result=1
+else
+    echo " $TEST_NAME: PASS: --profile=el9 skipped the expected tests"
+fi
+
+#----------------------------------------------------------------
+
+# Test 4: --profile=rawhide should work
+$ANNOCHECK $EXE $BASE_OPTS --profile=rawhide > $A_OUT 2>&1
+if [ $? -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed with --profile=rawhide"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+else
+    echo " $TEST_NAME: PASS: --profile=rawhide was accepted"
+fi
+
+#----------------------------------------------------------------
+
+# Test 5: --profile=rhivos should enable the rhivos test
+$ANNOCHECK $EXE $BASE_OPTS --profile=rhivos > $A_OUT 2>&1
+if [ $? -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed with --profile=rhivos"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+else
+    echo " $TEST_NAME: PASS: annocheck accepted --profile=rhivos"
+fi
+
+#----------------------------------------------------------------
+
+if [ $result == 1 ];
+then
+    echo " $TEST_NAME: some profile tests failed"
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+end_test

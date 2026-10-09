@@ -31,8 +31,8 @@
 
 /* These are necessary so that we can call examine the target's options.  */
 #include <plugin-version.h>
-#include <ansidecl.h>
 extern struct plugin_gcc_version gcc_version ATTRIBUTE_UNUSED;
+#include <ansidecl.h>
 #include <machmode.h>
 #include <output.h>
 #include <opts.h>

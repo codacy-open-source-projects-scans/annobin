@@ -25,7 +25,11 @@ unsigned int
 annobin_get_target_pointer_size (void)
 {
   // Note - testing POINTER_SIZE is unreliable.
+#if GCCPLUGIN_VERSION_MAJOR < 17
   return GET_INT_OPTION_BY_NAME (target_flags) & MASK_64BIT ? 64 : 32;
+#else
+  return 64;
+#endif
 }
 
 int

@@ -12,10 +12,19 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
-# Mimics how glibc builds C sources without annotation.
+# Tests that the special file ldconfig can pass annocheck
 
 TEST_NAME=ldconfig
 . $srcdir/common.sh
+
+uname -m > host
+grep -q -i -e "riscv" host
+if [ $? == 0 ];
+then
+    echo "$TEST_NAME: SKIP: On Risc-V machines ldconfig is a script not a binary"
+    cat host
+    exit $EXIT_TEST_SKIPPED
+fi
 
 SKIPS="--skip-cf-protection --skip-property-note --skip-stack-realign --skip-entry --skip-dynamic-tags --skip-not-dynamic-tags --skip-branch-protection --skip-not-branch-protection --skip-lto --skip-pie --suppress-version-warnings"
 
@@ -26,22 +35,29 @@ start_test
 
 if [ -f $LDCONFIG ];
 then
+    # The /sbin/ldconfig file on the s390x is a symbolic link,
+    # hence the --follow-links option.
+    A_OPTS="--follow-links --ignore-gaps"
+
     if [ -f $DEBUG ];
     then
-      $ANNOCHECK $LDCONFIG $SKIPS --ignore-gaps --debug-file $DEBUG > ldconfig.out
-      grep -e "PASS" ldconfig.out
-      if [ $? != 0 ];
-      then
-          echo " $TEST_NAME: FAIL: generating assembler notes did not hide lack of GCC notes"
-          $ANNOCHECK $LDCONFIG $SKIPS --ignore-gaps --debug-file $DEBUG --verbose
-	  end_test
-          exit 1
-       fi
-    else
-	echo " $TEST_NAME: SKIP: ldconfig.debug file not found"
+	A_OPTS+="--debug-file $DEBUG"
+    fi
+
+    $ANNOCHECK $LDCONFIG $SKIPS $A_OPTS  > $A_OUT
+
+    grep -q -e "PASS" $A_OUT
+    if [ $? != 0 ];
+    then
+        echo " $TEST_NAME: FAIL: ldconfig did not pass annocheck"
+        cat $A_OUT
+	end_test
+        exit $EXIT_TEST_FAILED
     fi
 else
-    echo " $TEST_NAME: SKIP: /sbin/ldconfig file not found"
+    echo " $TEST_NAME: SKIP: $LDCONFIG file not found"
+    end_test
+    exit $EXIT_TEST_SKIPPED
 fi
 
 end_test

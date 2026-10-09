@@ -7,7 +7,7 @@
 project(
   'annobin',
   ['c', 'cpp'],
-  version: '13.12',
+  version: '13.32',
   meson_version: '>=0.59'
 )
 
@@ -34,10 +34,7 @@ configure_file(
 )
 
 
-
 # Subdirs
-subdir('gcc-plugin')
-
 if get_option('clang-plugin')
   subdir('clang-plugin')
 endif
@@ -47,16 +44,32 @@ endif
 if get_option('annocheck')
   subdir('annocheck')
 endif
-subdir('tests')
 if get_option('docs')
   subdir('doc')
 endif
 
+subdir('gcc-plugin')
+subdir('tests')
+
+
+# Lint target
+TIDY_ARGS = [
+  '-header-filter', '^((?!(libiberty)).)*$',
+  '-source-filter', '^((?!(libiberty)).)*$']
+nproc = find_program('nproc')
+if nproc.found()
+  jobs = run_command(nproc, check:false).stdout()
+  TIDY_ARGS += ['-j', jobs]
+endif
+run_target(
+  'lint',
+  command : ['run-clang-tidy',
+             '-config-file=' + meson.project_source_root() + '/.clang-tidy',
+             '-p=' + meson.project_build_root()] + TIDY_ARGS)
 
 # Summary
 summary('C++ Compiler', meson.get_compiler('cpp').get_id(), section: 'Toolchain')
 summary('C++ Linker', meson.get_compiler('cpp').get_linker_id(), section: 'Toolchain')
-
 summary('Build LLVM plugin', get_option('llvm-plugin'))
 summary('Build Clang plugin', get_option('clang-plugin'))
 summary('Build annocheck', get_option('annocheck'))

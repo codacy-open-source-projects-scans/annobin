@@ -15,11 +15,23 @@
 TEST_NAME=compile
 . $srcdir/common.sh
 
-PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach -fplugin-arg-annobin-note-format=note"
 
 start_test
 
-echo $GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c $GCC_OPTS"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: SKIP: could not compile test file"
+    echo "$TEST_NAME: gcc command line: $COMMAND"
+    echo "$TEST_NAME: gcc output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
      -c \
      -fPIC \
      -Wall \
@@ -27,28 +39,35 @@ echo $GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
      --save-temps -fverbose-asm \
      -fno-stack-protector \
      -fplugin-arg-annobin-stack-threshold=0x10 \
- $srcdir/hello.c
+     $srcdir/hello.c"
+$COMMAND >$G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: unable to compile test file hello.c"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
 
-
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
-     -c \
-     -fPIC \
-     -Wall \
-     -g \
-     --save-temps -fverbose-asm \
-     -fno-stack-protector \
-     -fplugin-arg-annobin-stack-threshold=0x10 \
- $srcdir/hello.c
-
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
      -O3 \
      -c \
      -fPIC \
      -fno-stack-protector \
      -fplugin-arg-annobin-global-file-syms \
- $srcdir/hello2.c
+     $srcdir/hello2.c"
+$COMMAND >$G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: unable to compile test file hello2.c"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
 
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
      -O2 \
      -c \
      -fPIE \
@@ -57,21 +76,46 @@ $GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
      -D_FORTIFY_SOURCE=2 \
      -fplugin-arg-annobin-no-stack-size-notes \
      -grecord-gcc-switches \
- $srcdir/hello3.c
+     $srcdir/hello3.c"
+$COMMAND >$G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: unable to compile test file hello3.c"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
 
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS \
     -O2 \
     -fpic \
     -fstack-protector \
     -fplugin-arg-annobin-version \
     -shared \
- $srcdir/hello_lib.c \
-     -o libhello.so
+    $srcdir/hello_lib.c \
+    -o libhello.so"
+$COMMAND >$G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: unable to compile the shared library"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
 
-$GCC \
-     -L . -pie \
-     -Wl,-z,now,-z,relro \
- hello.o hello2.o hello3.o -lhello -o compile-test.exe
+COMMAND="$GCC -L . -pie -Wl,-z,now,-z,relro \
+           hello.o hello2.o hello3.o -lhello -o compile-test.exe"
+$COMMAND >$G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: unable to link objects"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
 
 # FIXME - we should check that the notes were parsed correctly...
 $READELF --notes --wide compile-test.exe > /dev/null

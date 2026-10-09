@@ -67,8 +67,8 @@ annobin_save_target_specific_information (void)
 static void
 record_ABI_note (unsigned long val, annobin_function_info * info)
 {
-  annobin_inform (INFORM_VERBOSE, "x86_64: Record isa of %lx for %s",
-		  global_x86_isa, get_func_name (info));
+  annobin_inform (INFORM_VERBOSE, "i686: Record isa of %lx for %s",
+		  val, get_func_name (info));
 
   if (use_string_format ())
     {
@@ -78,7 +78,7 @@ record_ABI_note (unsigned long val, annobin_function_info * info)
 	return;
       prev_abi = val;
 
-      sprintf (annobin_note_buffer, "%s:%ld", ANNOBIN_STRING_X86_64_ABI, val);
+      sprintf (annobin_note_buffer, "%s:%lu", ANNOBIN_STRING_X86_64_ABI, val);
       annobin_output_string_note (annobin_note_buffer);
     }
   else

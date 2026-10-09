@@ -14,9 +14,6 @@
 
 # Test the support for future compiler features
 
-set +x
-echo START
-
 #-------------------------------------------------------------------------
 
 TEST_NAME="future__auto_var_init"
@@ -43,61 +40,61 @@ OPTS+=" -fplugin=$PLUGIN"
 start_test
 
 # Use atexit.c rather than main.c as it is bigger.
-COMMAND="$GCC $OPTS $srcdir/atexit.c -c -ftrivial-auto-var-init=zero"
+G_COMMAND="$GCC $OPTS $srcdir/atexit.c -c -ftrivial-auto-var-init=zero"
 
 A_OPTS="--skip-all --test-auto-var-init --verbose --suppress-version-warnings"
 A_COMMAND="$ANNOCHECK $A_OPTS atexit.o"
 
-$COMMAND
+$G_COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: SKIP: compiler does not support -ftrivial-auto-var-init"
+    cat $G_OUT
 else
-    $A_COMMAND > future-test.out
+    $A_COMMAND > $A_OUT
     if [ $? != 0 ];
     then
         echo " $TEST_NAME: FAIL: annocheck exit code not 0"
-        echo " $TEST_NAME: compile command: $COMMAND"
         echo " $TEST_NAME: annocheck command: $A_COMMAND"
         echo " $TEST_NAME: annocheck output"
-        $A_COMMAND
+        cat $A_OUT
 	end_test
-	exit 1
+	exit $EXIT_TEST_FAILED
     fi
-    grep -e "PASS: auto-var-init test" future-test.out
+    grep -q -e"PASS: auto-var-init test" $A_OUT
     if [ $? != 0 ];
     then
         echo " $TEST_NAME: FAIL: annocheck did not generate a PASS result"
-        echo " $TEST_NAME: compile command: $COMMAND"
+        echo " $TEST_NAME: compile command: $G_COMMAND"
         echo " $TEST_NAME: annocheck command: $A_COMMAND"
         echo " $TEST_NAME: annocheck output"
-        $A_COMMAND
+        cat $A_OUT
 	end_test
-	exit 1
+	exit $EXIT_TEST_FAILED
     fi
     
     # Try a different version of the option, now that we know that it works
-    COMMAND="$GCC $OPTS $srcdir/atexit.c -c -ftrivial-auto-var-init=pattern"
+    G_COMMAND="$GCC $OPTS $srcdir/atexit.c -c -ftrivial-auto-var-init=pattern"
 
-    $COMMAND
+    $G_COMMAND > $G_OUT 2>&1
     if [ $? != 0 ];
     then
-        echo " $TEST_NAME: FAIL: compiling with -ftrivial-auto-var-init=pattern failed"
-        echo " $TEST_NAME: compile command: $COMMAND"
+        echo " $TEST_NAME: SKIP: compilation failed"
+        echo " $TEST_NAME: compile command: $G_COMMAND"
+	cat $G_OUT
         end_test
-        exit 1
+        exit $EXIT_TEST_SKIPPED
     fi
 
-    $A_COMMAND >> future-test.out
+    $A_COMMAND > $A_OUT
     if [ $? == 0 ];
     then
         echo " $TEST_NAME: FAIL: annocheck exit code is 0"
-        echo " $TEST_NAME: compile command: $COMMAND"
         echo " $TEST_NAME: annocheck command: $A_COMMAND"
         echo " $TEST_NAME: annocheck output"
-        $A_COMMAND
+        cat $A_OUT
         end_test
-        exit 1
+        exit $EXIT_TEST_FAILED
     fi
 
     echo " $TEST_NAME: PASS"
@@ -107,61 +104,60 @@ fi
 
 TEST_NAME="future__zero_call_used_regs"
 
-COMMAND="$GCC $OPTS $srcdir/atexit.c -c -fzero-call-used-regs=all"
+G_COMMAND="$GCC $OPTS $srcdir/atexit.c -c -fzero-call-used-regs=all"
 
 A_OPTS="--skip-all --test-zero-call-used-regs --verbose --suppress-version-warnings"
 A_COMMAND="$ANNOCHECK $A_OPTS atexit.o"
 
-$COMMAND
+$G_COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: SKIP: compiler does not support -fzero-call-used-regs"
+    cat $G_OUT
 else
-    $A_COMMAND >> future-test.out
+    $A_COMMAND > $A_OUT
     if [ $? != 0 ];
     then
         echo " $TEST_NAME: FAIL: annocheck exit code not 0"
-        echo " $TEST_NAME: compile command: $COMMAND"
         echo " $TEST_NAME: annocheck command: $A_COMMAND"
         echo " $TEST_NAME: annocheck output"
-        $A_COMMAND
+	cat $A_OUT
 	end_test
-	exit 1
+	exit $EXIT_TEST_FAILED
     fi
-    grep -e "PASS: zero-call-used-regs test" future-test.out
+    grep -q -e"PASS: zero-call-used-regs test" $A_OUT
     if [ $? != 0 ];
     then
         echo " $TEST_NAME: FAIL: annocheck did not generate a PASS result"
-        echo " $TEST_NAME: compile command: $COMMAND"
         echo " $TEST_NAME: annocheck command: $A_COMMAND"
         echo " $TEST_NAME: annocheck output"
-        $A_COMMAND
+        cat $A_OUT
 	end_test
-	exit 1
+	exit $EXIT_TEST_FAILED
     fi
     
     # Try a different version of the option, now that we know that it works
-    COMMAND="$GCC $OPTS $srcdir/atexit.c -c -fzero-call-used-regs=skip"
+    G_COMMAND="$GCC $OPTS $srcdir/atexit.c -c -fzero-call-used-regs=skip"
 
-    $COMMAND
+    $G_COMMAND > $G_OUT 2>&1
     if [ $? != 0 ];
     then
-        echo " $TEST_NAME: FAIL: compiling with -fzero-call-used-regs=skip failed"
-        echo " $TEST_NAME: compile command: $COMMAND"
+        echo " $TEST_NAME: SKIP: compiling with -fzero-call-used-regs=skip failed"
+        echo " $TEST_NAME: compile command: $G_COMMAND"
+	cat $G_OUT
         end_test
-        exit 1
+        exit $EXIT_TEST_SKIPPED
     fi
 
-    $A_COMMAND >> future-test.out
+    $A_COMMAND > $A_OUT
     if [ $? == 0 ];
     then
-        echo " $TEST_NAME: FAIL: annocheck exit code is 0, expected 1"
-        echo " $TEST_NAME: compile command: $COMMAND"
+        echo " $TEST_NAME: FAIL: test of -fzero-call-used-regs=skip generated exit code is 0, expected 1"
         echo " $TEST_NAME: annocheck command: $A_COMMAND"
         echo " $TEST_NAME: annocheck output"
-        $A_COMMAND
+        cat $A_OUT
         end_test
-       exit 1
+       exit $EXIT_TEST_FAILED
     fi
 
     echo " $TEST_NAME: PASS"
@@ -171,62 +167,67 @@ fi
 
 TEST_NAME="future__strict_flex_arrays"
 
-COMMAND="$GCC $OPTS $srcdir/atexit.c -c -fstrict-flex-arrays=3 -Wstrict-flex-arrays"
+G_COMMAND="$GCC $OPTS $srcdir/atexit.c -c -fstrict-flex-arrays=3 -Wstrict-flex-arrays"
 
 A_OPTS="--skip-all --test-flex-arrays --verbose --suppress-version-warnings"
 A_COMMAND="$ANNOCHECK $A_OPTS atexit.o"
 
-$COMMAND
+$G_COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: SKIP: compiler does not support -fstrict-flex-arrays"
+    cat $G_OUT
 else
-    $A_COMMAND >> future-test.out
+    $A_COMMAND > $A_OUT
     if [ $? != 0 ];
     then
         echo " $TEST_NAME: FAIL: annocheck exit code not 0"
-        echo " $TEST_NAME: compile command: $COMMAND"
+        echo " $TEST_NAME: compile command: $G_COMMAND"
         echo " $TEST_NAME: annocheck command: $A_COMMAND"
-        echo " $TEST_NAME: annocheck output"
-        $A_COMMAND
+        echo " $TEST_NAME: annocheck output:"
+        cat $A_OUT
 	end_test
-	exit 1
+	exit $EXIT_TEST_FAILED
     fi
-    grep -e "PASS: flex-arrays test" future-test.out
+
+    grep -q -e"PASS: flex-arrays test" $A_OUT
     if [ $? != 0 ];
     then
         echo " $TEST_NAME: FAIL: annocheck did not generate a PASS result"
-        echo " $TEST_NAME: compile command: $COMMAND"
+        echo " $TEST_NAME: compile command: $G_COMMAND"
         echo " $TEST_NAME: annocheck command: $A_COMMAND"
-        echo " $TEST_NAME: annocheck output"
-        $A_COMMAND
+        echo " $TEST_NAME: annocheck output:"
+        cat $A_OUT
 	end_test
-	exit 1
+	exit $EXIT_TEST_FAILED
     fi
     
     # Try a different version of the option, now that we know that it works
-    COMMAND="$GCC $OPTS $srcdir/atexit.c -c -fstrict-flex-arrays=0"
+    G_COMMAND="$GCC $OPTS $srcdir/atexit.c -c -fstrict-flex-arrays=0"
 
-    $COMMAND
+    $G_COMMAND > $G_OUT 2>&1
     if [ $? != 0 ];
     then
-        echo " $TEST_NAME: FAIL: compiling with -fstrict-flex-arrays=0 failed"
-        echo " $TEST_NAME: compile command: $COMMAND"
+        echo " $TEST_NAME: SKIP: compiling with -fstrict-flex-arrays=0 failed"
+        echo " $TEST_NAME: compile command: $G_COMMAND"
+	cat $G_OUT
         end_test
-        exit 1
+        exit $EXIT_TEST_SKIPPED
     fi
 
     A_OPTS="--skip-all --test-future --verbose"
-    $A_COMMAND >> future-test.out
+    A_COMMAND="$ANNOCHECK $A_OPTS atexit.o"
+
+    $A_COMMAND > $A_OUT
     if [ $? == 0 ];
     then
         echo " $TEST_NAME: FAIL: annocheck exit code is 0, expected 1"
-        echo " $TEST_NAME: compile command: $COMMAND"
+        echo " $TEST_NAME: compile command: $G_COMMAND"
         echo " $TEST_NAME: annocheck command: $A_COMMAND"
         echo " $TEST_NAME: annocheck output"
-        $A_COMMAND
+        cat $A_OUT
         end_test
-       exit 1
+	exit $EXIT_TEST_FAILED
     fi
 
     echo " $TEST_NAME: PASS"

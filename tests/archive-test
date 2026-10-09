@@ -1,0 +1,168 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck can process AR format static library archives.
+
+TEST_NAME=archive
+. $srcdir/common.sh
+
+start_test
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+
+# Compile several object files with the annobin plugin
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello_lib.c > $G_OUT 2>&1
+
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test files"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# ---------------------------------------------------------------
+# Test 1: Create an archive and check that annocheck can process it
+# ---------------------------------------------------------------
+
+ARCHIVE=test-archive.a
+$AR cr $ARCHIVE hello.o hello2.o hello3.o hello_lib.o > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to create archive"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+SKIPS="--ignore-gaps --suppress-version-warnings --skip-lto --skip-cf-protection"
+$ANNOCHECK $ARCHIVE $SKIPS > $A_OUT 2>&1
+
+exit_code=$?
+if [ $exit_code -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed or errored (exit code $exit_code) on archive"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# Verify annocheck actually examined the archive members
+grep -q -e "PASS\|FAIL:\|MAYB:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck produced no test results for archive"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck processed a multi-member archive"
+
+# ---------------------------------------------------------------
+# Test 2: Verbose mode should show individual archive member names
+# ---------------------------------------------------------------
+
+$ANNOCHECK $ARCHIVE $SKIPS --verbose > $A_OUT 2>&1
+
+grep -q "$ARCHIVE:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck verbose output does not reference archive filename"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck verbose output references archive filename"
+
+# ---------------------------------------------------------------
+# Test 3: Archive with a single object file
+# ---------------------------------------------------------------
+
+ARCHIVE_SINGLE=test-single.a
+$AR cr $ARCHIVE_SINGLE hello.o > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to create single-member archive"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+$ANNOCHECK $ARCHIVE_SINGLE $SKIPS > $A_OUT 2>&1
+
+exit_code=$?
+if [ $exit_code -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed (exit code $exit_code) on single-member archive"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+grep -q -e "PASS\|FAIL:\|MAYB:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck produced no test results for single-member archive"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck processed a single-member archive"
+
+# ---------------------------------------------------------------
+# Test 4: Archive with ranlib index (symbol table)
+# ---------------------------------------------------------------
+
+ARCHIVE_RANLIB=test-ranlib.a
+$AR crs $ARCHIVE_RANLIB hello.o hello2.o hello3.o hello_lib.o > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to create indexed archive"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+$ANNOCHECK $ARCHIVE_RANLIB $SKIPS > $A_OUT 2>&1
+
+exit_code=$?
+if [ $exit_code -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed (exit code $exit_code) on indexed archive"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+grep -q -e "PASS\|FAIL:\|MAYB:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck produced no test results for indexed archive"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck processed an indexed archive"
+
+end_test

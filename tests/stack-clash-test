@@ -1,0 +1,123 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck detects the use (or absence) of -fstack-clash-protection
+
+TEST_NAME=stack-clash
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-c -O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS"
+
+start_test
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c $GCC_OPTS"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: SKIP: could not compile test file"
+    echo "$TEST_NAME: gcc command line: $COMMAND"
+    echo "$TEST_NAME: gcc output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# First check if the compiler supports -fstack-clash-protection
+$GCC -fstack-clash-protection -c $srcdir/hello.c -o /dev/null 2>$G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: compiler does not support -fstack-clash-protection"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Part 1: Compile WITH -fstack-clash-protection
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -fstack-clash-protection $srcdir/hello2.c"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    # Since we have tested above that the compiler supports -fstack-clash-protection
+    # a failure to build now indicates that something is wrong.  Hence the FAIL result.
+    echo " $TEST_NAME: FAIL: unable to compile test file with -fstack-clash-protection"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+A_OUT=stack-clash-test.out
+SKIPS="--skip-all --test-stack-clash --suppress-version-warnings"
+A_COMMAND="$ANNOCHECK hello2.o $SKIPS --verbose"
+
+$A_COMMAND > $A_OUT
+grep -q -e"PASS: stack-clash test" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not PASS for binary compiled with -fstack-clash-protection"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck PASSed for a binary compiled with -fstack-clash-protection"
+
+#-------------------------------------------------------------
+
+# Part 2: Compile WITHOUT -fstack-clash-protection
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello2.c"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    # This is suspicious.  If we can build with -fstack-clash-protection,
+    # why can we not build without it ?
+    echo " $TEST_NAME: FAIL: unable to compile test file without -fstack-clash-protection"
+    echo " $TEST_NAME: command: $COMMAND"
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+$A_COMMAND > $A_OUT
+grep -q -e"FAIL: stack-clash test" $A_OUT
+if [ $? != 0 ];
+then
+    uname -m > host
+    grep -q -i -e "riscv" host
+    if [ $? == 0 ];
+    then
+	$GCC -dumpversion > $G_OUT
+	if [ $(cat $G_OUT) -lt 15 ];
+	then
+	    # Annocheck knows that stack-clash-protection was not supported
+	    # for the Risc-V prior to gcc version 15, so it generates a SKIP
+	    # result for the stack-clash-test...
+	    echo "$TEST_NAME: SKIP: Missing stack clash protection is not an issue for Risc-V binaries prior to gcc-15"
+	    exit $EXIT_TEST_SKIPPED
+	fi
+	cat $G_OUT
+    fi
+
+    echo " $TEST_NAME: FAIL: annocheck did not FAIL for binary compiled without -fstack-clash-protection"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck FAILed a binary compiled without -fstack-clash-protection"
+
+end_test

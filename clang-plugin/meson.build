@@ -14,6 +14,7 @@ cxx.find_library('clang-cpp')
 clang_plugin = custom_target(
   'annobin-for-clang.so',
   input: ['annobin.cpp', '../annobin-common.cc'],
+  depend_files: ['../AnnobinLLVMCommon.h'],
   output: 'annobin-for-clang.so',
   install: true,
   install_dir: install_dir,
@@ -31,6 +32,7 @@ clang_plugin = custom_target(
     '-D_GLIBCXX_ASSERTIONS',
     '-shared',
     '-fPIC',
+    '-fexceptions',
     '-Wall',
     '-O2',
     '-flto',

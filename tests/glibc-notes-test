@@ -17,22 +17,23 @@
 TEST_NAME=glibc-notes
 . $srcdir/common.sh
 
-OPTS="-g -c -O2 -fpie"
+OPTS="-g -c -O2 -fPIE -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
 
 start_test
 
 $GCC -Wa,--generate-missing-build-notes=yes $OPTS $srcdir/hello.c
 if [ $? != 0 ];
 then
-    $GCC $OPTS $srcdir/hello.c
+    $GCC $OPTS $srcdir/hello.c > $G_OUT 2>&1
     if [ $? != 0 ];
     then
-	echo "glibc-notes-test: FAIL: Could not compile source files"
-	exit 1
+	echo "$TEST_NAME: SKIP: Could not compile source files"
+	cat $G_OUT
+    else
+	echo "$TEST_NAME: SKIP: Assembler does not support --generate-missing-build-notes"
     fi
-    echo "glibc-notes-test: Assembler does not support --generate-missing-build-notes, skipping test"
     end_test
-    exit 0
+    exit $EXIT_TEST_SKIPPED
 fi
 
 $GCC -Wa,--generate-missing-build-notes=yes $OPTS $srcdir/hello2.c
@@ -40,19 +41,27 @@ $GCC -Wa,--generate-missing-build-notes=yes $OPTS $srcdir/hello3.c
 $GCC -Wa,--generate-missing-build-notes=yes $OPTS -shared $srcdir/hello_lib.c -o libhello.so
 
 # Link without system files as these may not have been hardened.
-$GCC -pie -Wl,-z,now hello.o hello2.o hello3.o -L. -lhello -o glibc-notes.exe
+$GCC -pie -Wl,-z,now hello.o hello2.o hello3.o -L. -lhello -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: SKIP: Could not compile & link source files"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
 
 # Run annocheck
 
-SKIPS="--skip-cf-protection --skip-property-note --skip-stack-realign --skip-entry --skip-dynamic-tags --skip-lto --skip-fortify --skip-warnings --suppress-version-warnings --skip-branch-protection --skip-not-branch-protection"
+SKIPS="--skip-cf-protection --skip-property-note --skip-stack-realign --skip-entry --skip-dynamic-tags --skip-lto --skip-fortify --skip-warnings --suppress-version-warnings --skip-branch-protection --skip-not-branch-protection --skip-stack-prot"
 
-$ANNOCHECK glibc-notes.exe $SKIPS --ignore-gaps > glibc-notes.out
-grep -e "PASS" glibc-notes.out
+$ANNOCHECK $EXE $SKIPS --ignore-gaps --verbose > $A_OUT
+grep -q -e"PASS" $A_OUT
 if [ $? != 0 ];
 then
-    echo "glibc-notes-test: FAIL: generating assembler notes did not hide lack of GCC notes"
-    cat glibc-notes.out
-    exit 1
+    echo "$TEST_NAME: FAIL: generating assembler notes did not hide lack of GCC notes"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
 fi
 
 end_test

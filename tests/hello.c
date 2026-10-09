@@ -35,3 +35,15 @@ baz (void)
   return 3;
 }
 
+int
+barer (int arg)
+{
+  return 2 * arg * arg;
+}
+
+int
+bazer (int arg)
+{
+  return 3 * arg;
+}
+

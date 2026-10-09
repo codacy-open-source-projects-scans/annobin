@@ -19,25 +19,30 @@ TEST_NAME=unicode
 
 start_test
 
-$GCC $srcdir/trick-hello.s -o trick-hello.exe
+$GCC $srcdir/trick-hello.s -o trick-hello.exe > $G_OUT 2>&1
+
 if [ $? != 0 ];
 then
-    echo "unicode-test: FAIL: Could not assemble test source file"
+    echo "$TEST_NAME: SKIP: Could not assemble test source file"
+    cat $G_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_SKIPPED
 fi
 
 # Run annocheck
 
 OPTS="--skip-all --ignore-gaps --test-unicode --test-unicode-suspicious  --suppress-version-warnings"
 
-$ANNOCHECK trick-hello.exe $OPTS > unicode.out
-grep -e "FAIL: unicode" unicode.out
+$ANNOCHECK trick-hello.exe $OPTS > $A_OUT
+grep -q -e"FAIL: unicode" $A_OUT
 if [ $? != 0 ];
 then
-    echo "unicode-test: FAIL: annocheck did not detect suspicious symbol names"
-    $ANNOCHECK trick-hello.exe $OPTS --verbose
-    exit 1
+    echo "$TEST_NAME: FAIL: annocheck did not detect suspicious symbol names"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
 fi
+
+echo "$TEST_NAME: PASS: annocheck detected suspicious symbol names"
 
 end_test

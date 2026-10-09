@@ -1,0 +1,124 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck detects -D_GLIBCXX_ASSERTIONS via --test-glibcxx-assertions
+
+TEST_NAME=glibcxx
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach -fplugin-arg-annobin-verbose"
+OPTS="-c -O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -fstack-clash-protection -fno-lto"
+
+start_test
+
+export COLLECT_GCC_OPTIONS=
+
+# Part 1: Compile WITH -D_GLIBCXX_ASSERTIONS - should PASS
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -D_GLIBCXX_ASSERTIONS $srcdir/hello.c"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test file with -D_GLIBCXX_ASSERTIONS"
+    echo " $TEST_NAME: compile command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+SKIPS="--skip-all --test-glibcxx-assertions --suppress-version-warnings"
+A_COMMAND="$ANNOCHECK hello.o --verbose $SKIPS"
+$A_COMMAND > $A_OUT
+grep -q -e"PASS: glibcxx-assertions test" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not PASS for object compiled with -D_GLIBCXX_ASSERTIONS"
+    echo " $TEST_NAME: compile command: $COMMAND"
+    echo " $TEST_NAME: annocheck command: $A_COMMAND"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    echo " $TEST_NAME: gcc output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck PASSed for object compiled with -D_GLIBCXX_ASSERTIONS"
+
+#-----------------------------------------------------------------------
+
+# Part 2: Compile with _GLIBCXX_ASSERTIONS deliberately undefined - should FAIL
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -U_GLIBCXX_ASSERTIONS $srcdir/hello3.c"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test file with -U_GLIBCXX_ASSERTIONS"
+    echo " $TEST_NAME: compile command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+A_COMMAND="$ANNOCHECK hello3.o --verbose $SKIPS --enable-notes"
+$A_COMMAND > $A_OUT
+grep -q -e"FAIL: glibcxx-assertions test" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not FAIL for object compiled with -U_GLIBCXX_ASSERTIONS"
+    echo " $TEST_NAME: compile command: $COMMAND"
+    echo " $TEST_NAME: annocheck command: $A_COMMAND"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    echo " $TEST_NAME: gcc output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck FAILed for object compiled without -D_GLIBCXX_ASSERTIONS"
+
+#-----------------------------------------------------------------------
+
+# Part 3: Compile WITHOUT -D_GLIBCXX_ASSERTIONS - should FAIL
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello2.c"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test file without -D_GLIBCXX_ASSERTIONS"
+    echo " $TEST_NAME: compile command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+A_COMMAND="$ANNOCHECK hello2.o --verbose $SKIPS --enable-notes"
+$A_COMMAND > $A_OUT
+grep -q -e"FAIL: glibcxx-assertions test" -e "MAYB: test: glibcxx-assertions" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not FAIL for object compiled without -D_GLIBCXX_ASSERTIONS"
+    echo " $TEST_NAME: compile command: $COMMAND"
+    echo " $TEST_NAME: annocheck command: $A_COMMAND"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    echo " $TEST_NAME: gcc output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck FAILed an object compiled without -D_GLIBCXX_ASSERTIONS"
+
+end_test

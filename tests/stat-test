@@ -32,36 +32,36 @@ then
 fi
 
 # Now add in our newly built plugin.
-OPTS="$OPTS -fplugin=$PLUGIN"
+OPTS+=" -fplugin=$PLUGIN"
 
 start_test
 
 COMMAND="$GCC $OPTS -o stat.exe $srcdir/stat.c"
-$COMMAND > gcc.out
+$COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
-	echo " $TEST_NAME: FAIL: Could not compile source file"
+	echo " $TEST_NAME: SKIP: Could not compile source file"
 	echo " $TEST_NAME: command: $COMMAND"
-	cat gcc.out
+	cat $G_OUT
 	end_test
-	exit 1
+	exit $EXIT_TEST_SKIPPED
 fi
 
 # Run annocheck
 
-SKIPS="--skip-cf-protection --skip-property-note --skip-stack-realign --skip-entry --skip-dynamic-tags --skip-lto --skip-fortify --skip-warnings --skip-dynamic-tags --skip-not-dynamic-tags --skip-branch-protection --skip-not-branch-protection --suppress-version-warnings"
+SKIPS="--skip-cf-protection --skip-property-note --skip-stack-realign --skip-entry --skip-dynamic-tags --skip-lto --skip-fortify --skip-warnings --skip-not-dynamic-tags --skip-branch-protection --skip-not-branch-protection --suppress-version-warnings"
 COMMAND2="$ANNOCHECK stat.exe $SKIPS --ignore-gaps"
-$COMMAND2 > stat.out
-grep -e "PASS" stat.out
+$COMMAND2 > $A_OUT
+grep -q -e"PASS" $A_OUT
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: FAIL: annocheck did not PASS the test executable"
     echo " $TEST_NAME: gcc command: $COMMAND"
     echo " $TEST_NAME: annocheck command: $COMMAND2"
     echo " $TEST_NAME: annocheck output:"
-    cat stat.out
+    cat $A_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
 end_test

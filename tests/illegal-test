@@ -1,0 +1,196 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Check's that annocheck refuses to process rpms/tarballs/zip files
+# that contain shell-escaping characters.
+
+# Enable this when debugging this script.
+# set -x
+
+TEST_NAME=illegal
+. $srcdir/common.sh
+
+G_OPTS="-O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+A_OPTS="--ignore-gaps --skip-all --test-unicode --verbose --suppress-version-warnings"
+
+start_test
+
+# Check that compiling and archiving work.
+
+COMMAND="$GCC $G_OPTS -c $srcdir/hello.c $GCC_G_OPTS"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: SKIP: could not compile test file"
+    echo "$TEST_NAME: gcc command line: $COMMAND"
+    echo "$TEST_NAME: gcc output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+if ! command -v "$TAR" >/dev/null 2>&1; then
+    echo " $TEST_NAME: SKIP: the archiver '$TAR' not installed"
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# It is really hard to persuade a shell script to create a badly
+# named file.  So instead we use a small C program.
+
+COMMAND="$GCC $srcdir/bad-rename.c -o bad-rename"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: SKIP: could not compile rename command"
+    echo "$TEST_NAME: gcc command line: $COMMAND"
+    echo "$TEST_NAME: gcc output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Create an object file.
+
+$GCC $G_OPTS -c $srcdir/hello.c > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test sources"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Put it into a tarball.
+
+TEST_FILE=test.tar
+
+rm -f $TEST_FILE
+$TAR cf $TEST_FILE hello.o > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to create tarball"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Rename the tarball (but keep a copy of the original)
+
+cp $TEST_FILE saved.$TEST_FILE
+
+./bad-rename $TEST_FILE
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: Unable to create a illegaly named tarball"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Do not encode the bad name in this script - it causes all kinds of problems.
+# Instead just find it.
+
+BAD_FILE=./`find . -name $TEST_FILE\* -print -quit`
+
+# Ask annocheck to process it.
+# FIXME: The marker string is hard coded inside bad-rename.c
+
+MARKER=ILLEGAL_TEST
+
+rm -f ./$MARKER
+
+# Don't capture the command line into a shell variable - it will choke on the illegal characters.
+
+$ANNOCHECK $A_OPTS "$BAD_FILE" > $A_OUT 2>&1
+if [ $? != 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck PASSed an illegal tarball"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# Make sure that annocheck's processing of the bad file did not create the marker.
+
+if [ -f ./$MARKER ] ; then
+    echo " $TEST_NAME: FAIL: annocheck allowed a shell escape"
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# Make sure that annocheck flagged the presence of suspicious characters.
+
+grep -q -e "suspicious" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not FAIL for an illegally named tarball"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+#---------------------------------------------------------------------
+# Repeat the test this time using a suspicious debug rpm file.
+
+if ! command -v rpmbuild >/dev/null 2>&1; then
+    echo " $TEST_NAME: SKIP: the rpmbuild program not installed"
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Create a dummy debug rpm.
+rpmbuild --define "_topdir `pwd`" -bb $srcdir/illegal.spec > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to build dummy rpm"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Copy the newly built rpm to our current directory
+# (Renaming files with directory path components is error prone).
+
+cp `pwd`/RPMS/noarch/illegal*.rpm ./debug.rpm
+
+# Corrupt the rpm name.  Also use double quotes instead of semi-colons.
+./bad-rename debug.rpm '"'
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: Unable to create a illegaly named rpm"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Find the corrupted name.
+BAD_FILE=./`find . -name debug.rpm\* -print -quit`
+
+# Run annocheck with a good file name but a bad debug rpm name.
+$ANNOCHECK $A_OPTS saved.$TEST_FILE --debug-rpm "$BAD_FILE" > $A_OUT 2>&1
+if [ $? != 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck PASSed an illegal debug rpm"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+#---------------------------------------------------------------------
+
+# FIXME: For complete code coverage we should repeat this test
+# with a zip file.
+# FIXME: Also we should test for other "bad" characters in filenames.
+
+end_test

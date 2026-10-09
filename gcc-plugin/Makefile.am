@@ -15,7 +15,6 @@ annobin_la_LIBADD = @target_plugin@
 annobin_la_DEPENDENCIES = @target_plugin@
 
 annobin_la_LDFLAGS = -module
-AM_CXXFLAGS =
 
 annobin_la_LINK = $(LIBTOOL) --tag=CXX $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CXXLD) $(AM_CXXFLAGS) $(CXXFLAGS) \

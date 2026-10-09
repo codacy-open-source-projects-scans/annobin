@@ -34,6 +34,8 @@ static enum res
     SEC, USEC, NSEC
   } resolution = USEC;
 
+#define NANOSECONDS_PER_SECOND 1000000000ULL
+
 static bool
 timing_start_file (annocheck_data * data ATTRIBUTE_UNUSED)
 {
@@ -84,23 +86,29 @@ timing_interesting_seg (annocheck_data *     data ATTRIBUTE_UNUSED,
 static unsigned long long int
 time_diff (struct timespec * end, struct timespec * start)
 {
-  /* FIXME: Check for end < start ? */
+  if (end->tv_sec < start->tv_sec
+      || (end->tv_sec == start->tv_sec && end->tv_nsec < start->tv_nsec))
+    return 0ULL;
+
   if (end->tv_nsec >= start->tv_nsec)
-    return ((end->tv_sec - start->tv_sec) * 1000000) + (end->tv_nsec - start->tv_nsec);
-  else
-    return ((end->tv_sec - start->tv_sec) * 1000000) - (end->tv_nsec - start->tv_nsec);
+    return ((unsigned long long)(end->tv_sec - start->tv_sec)) * NANOSECONDS_PER_SECOND
+      + (end->tv_nsec - start->tv_nsec);
+
+  return ((unsigned long long)(end->tv_sec - start->tv_sec - 1)) * NANOSECONDS_PER_SECOND
+    + (NANOSECONDS_PER_SECOND + end->tv_nsec - start->tv_nsec);
 }
 
 static const char *
 time_print (unsigned long long t)
 {
-  static char buffer[64];
+#define BUF_LEN 64
+  static char buffer[BUF_LEN];
 
   switch (resolution)
     {
-    case SEC:  sprintf (buffer, "%llu seconds", t / (1000 * 1000)); break;
-    case USEC: sprintf (buffer, "%llu microseconds", t / 1000); break;
-    case NSEC: sprintf (buffer, "%llu nanoseconds", t); break;
+    case SEC:  snprintf (buffer, BUF_LEN, "%llu seconds", t / NANOSECONDS_PER_SECOND); break;
+    case USEC: snprintf (buffer, BUF_LEN, "%llu microseconds", t / 1000); break;
+    case NSEC: snprintf (buffer, BUF_LEN, "%llu nanoseconds", t); break;
     }
 
   return buffer;
@@ -120,8 +128,7 @@ timing_end_file (annocheck_data * data)
       return false;
     }
 
-  einfo (INFO, "%s: total time %s, ",
-	 data->filename, time_print (time_diff (& end_time, & start_time)));  
+  einfo (INFO, "%s: total time %s, ", data->filename, time_print (time_diff (& end_time, & start_time)));  
   einfo (PARTIAL, "section scan: %s, ", time_print (time_diff (& segment_time, & section_time)));
   einfo (PARTIAL, "segment scan: %s ", time_print (time_diff (& end_time, & segment_time)));
   einfo (PARTIAL, "\n");

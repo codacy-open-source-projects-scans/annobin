@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck handles binaries built from mixed C and C++ sources.
+# Both compilers should produce consistent annotations.
+
+TEST_NAME=mixed-language
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-c -O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection -fexceptions"
+
+start_test
+
+# Check if g++ is available and supports the plugin
+$GPP -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello_cpp.cc -o hello_cpp.o > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: g++ not available or does not support the annobin plugin"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Compile C source files
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello_lib.c > $G_OUT 2>&1
+
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile C source files"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Link them together (use g++ to pull in C++ runtime)
+$GPP hello.o hello_cpp.o hello3.o hello_lib.o -pie -Wl,-z,now,-z,relro -o $EXE
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link mixed C/C++ executable"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Run annocheck - it should handle the mixed-language binary without crashing
+SKIPS="--ignore-gaps --suppress-version-warnings"
+A_COMMAND="$ANNOCHECK $EXE $SKIPS --verbose"
+$A_COMMAND > $A_OUT 2>&1
+
+exit_code=$?
+if [ $exit_code -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed (exit code $exit_code) on mixed C/C++ binary"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# Verify annocheck ran some tests (not just skipped everything)
+grep -q -e "PASS:\|FAIL:\|MAYB:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck produced no test results for the mixed-language binary"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck produced test results for the mixed-language binary"
+
+end_test

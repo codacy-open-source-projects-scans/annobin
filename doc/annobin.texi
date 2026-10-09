@@ -961,12 +961,12 @@ Currently the following tools are implemented:
 * Timing::    How long did the checks take ?
 @end menu
 
-The @command{annocheck} program is able to scan inside rpm files and
-libraries.  It will automatically recurse into any directories that
-are specified on the command line.  In addition @command{annocheck}
-knows how to find debug information held in separate debug files, and
-it will search for these whenever it needs the resources that they
-contain.
+The @command{annocheck} program is able to scan inside rpm files,
+libraries, tarballs and zip archives.  It will automatically recurse
+into any directories that are specified on the command line.  In
+addition @command{annocheck} knows how to find debug information held
+in separate debug files, and it will search for these whenever it
+needs the resources that they contain.
 
 New tools can be added to the annocheck framework by creating a new
 source file and including it in the @file{Makefile} used to build
@@ -1934,6 +1934,12 @@ scarce, @var{gnu relro} is not recommended due to its space overhead.
 To turn on @var{gnu relro} compile with the gcc
 @option{-Wl,-z,relro,-z,now} option.
 
+Note - this test is related to the @xref{Test writable got} test.  This
+test checks that the @var{GOT} and @var{PLT} tables are made read-only
+once the relocations have been processed.  The @var{writable got} test
+checks that the relocations that are used to initialise the @var{GOT}
+and @var{PLT} tables cannot be changed.
+
 If necessary the test can be disabled via the
 @option{--skip-gnu-relro} option and re-enabled via the
 @option{--test-gnu-relro} option.
@@ -2890,8 +2896,15 @@ attacker could change their contents and thus cause the program to
 call the wrong functions in the shared libraries.
 
 Under normal circumstances this test should never fail.  If it does
-then something unusual is going on.  One possible cure is to add the
-@option{-Wl,--secure-plt} option to the final link command line.
+then something unusual is going on.  One possible cure - for PowerPC
+binaries - is to add the @option{-Wl,--secure-plt} option to the final
+link command line.
+
+Note - this test is related to the @xref{Test gnu relro} test.  This
+test checks that the relocations that are used to initialise the
+@var{GOT} and @var{PLT} tables cannot be changed.  The @var{gnu relro}
+test checks that the @var{GOT} and @var{PLT} tables are made read-only
+once the relocations have been processed.
 
 If necessary the test can be disabled via the
 @option{--skip-writable-got} option and re-enabled via the
@@ -3799,13 +3812,41 @@ it would normally be detected.
 @item --without-tests
 Disable running the testsuite after building the various binaries.
 
-@item --without-clang-plugin
+@item --with-clang-plugin=no
 Disable the building of the annobin plugin for the Clang compiler.
 
-@item --without-llvm-plugin
+@item --without-clang-plugin
+An alias for @option{--with-clang-plugin=no}
+
+@item --with-clang-plugin=yes
+Enable the building of the annobin plugin for the Clang compiler.
+Fails if this is not possible.
+
+@item --with-clang-plugin=auto
+Enable the building of the annobin plugin for the Clang compiler.
+Does not fail if this is not possible, instead the plugin is just not
+built.  This is the default setting for the
+@option{--with-clang-plugin} option.
+
+@item --with-llvm-plugin=no
 Disable the building of the annobin plugin for the LLVM compiler
-backend.  The LLVM plugin is separate from the Clang plugin and can be
+backend.
+
+@item --without-llvm-plugin
+An alias for @option{--with-llvm-plugin=no}
+
+@item --with-llvm-plugin=yes
+Enable the building of the annobin plugin for the LLVM compiler
+backend.  Fails if this is not possible.
+
+The LLVM plugin is separate from the Clang plugin and can be
 used with any language that uses LLVM as a backend compiler.
+
+@item --with-llvm-plugin=auto
+Enable the building of the annobin plugin for the LLVM compiler
+backend.  Does not fail if this is not possible, instead the plugin is
+just not built.  This is the default setting for the
+@option{--with-llvm-plugin} option.
 
 @item --without-gcc-plugin
 Do not build the gcc plugin.

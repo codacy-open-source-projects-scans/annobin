@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright (c) 2017-2026 Red Hat.
+# Copyright (c) 2017-2024 Red Hat.
 #
 # This is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published
@@ -12,31 +12,85 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
+# NB/ THIS TEST IS ONLY RUN WHEN ANNOBIN IS CONFIGURED WITH meson
+
 TEST_NAME=clang
 . $srcdir/common.sh
 
-CLANG=clang
 PLUGIN=${CLANG_PLUGIN:-$TOP_BUILDDIR/clang-plugin/annobin-for-clang.so}
 
 start_test
-set -e
 
-PLUGIN_TEST_OPTIONS="\
+OPTS="\
    -D_FORTIFY_SOURCE=2 \
    -O2 \
    -g -grecord-gcc-switches \
    -fPIE \
-    -Wall \
+   -Wall \
    -fsanitize=safe-stack \
    -fstack-protector-strong \
    -fsanitize=cfi-cast-strict"
 
-$CLANG -fplugin=$PLUGIN $PLUGIN_TEST_OPTIONS -c $srcdir/hello-llvm-clang.c
-$READELF --wide --notes hello-llvm-clang.o > clang-plugin-test.out
-grep --silent -e "annobin built by clang version" clang-plugin-test.out
-grep --silent -e "running on clang version" clang-plugin-test.out
-grep --silent -e "sanitize_cfi" clang-plugin-test.out
-grep --silent -e "SpecLoadHarden" clang-plugin-test.out
-echo "PASS Clang plugin test"
+COMMAND="$CLANG -fplugin=$PLUGIN $OPTS -c $srcdir/hello-llvm-clang.c"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test file"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+EXE=hello-llvm-clang.o
+
+$READELF --wide --notes $EXE > $A_OUT
+
+grep -q -e "annobin built by clang version" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: missing 'annobin built by clang version' note"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+grep -q -e "running on clang version" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: missing 'running on clang version' note"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+grep -q -e "sanitize_cfi" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: missing 'sanitize_cfi' note"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+grep -q -e "SpecLoadHarden" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: missing 'SpecLoadHarden' note"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+$ANNOCHECK --skip-all --test-optimization --test-fortify --test-stack-prot --test-pie $EXE > $A_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL : Clang plugin test: annocheck did not PASS the binary";
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: Clang plugin test"
 
 end_test

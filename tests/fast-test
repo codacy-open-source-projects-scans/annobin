@@ -16,7 +16,7 @@ TEST_NAME=fast
 . $srcdir/common.sh
 
 PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
-OPTS="-fpie -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+OPTS="-fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
 EXTRA_OPTS="-fcf-protection -mstackrealign"
 FORT_OPTS="-O2 -D_FORTIFY_SOURCE=2"
 
@@ -25,24 +25,25 @@ start_test
 $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $FORT_OPTS $srcdir/hello_hard.c
 if [ $? != 0 ];
 then
-    echo "$TEST_NAME: Compiler might not support -fcf-protection, retrying without it"
+    echo " $TEST_NAME: Compiler might not support -fcf-protection, retrying without it"
     EXTRA_OPTS="-mstackrealign"
-    $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $FORT_OPTS -$srcdir/hello_hard.c
+    $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $FORT_OPTS $srcdir/hello_hard.c
     if [ $? != 0 ];
     then
-        echo "$TEST_NAME: Compiler might not support -mstackrealign, retrying without it"
+        echo " $TEST_NAME: Compiler might not support -mstackrealign, retrying without it"
         EXTRA_OPTS="-fcf-protection"
         $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $FORT_OPTS $srcdir/hello_hard.c
         if [ $? != 0 ];
         then
-            echo "$TEST_NAME: Compiler might not support either -fcf-protection or -mstackrealign, retrying without both"
+            echo " $TEST_NAME: Compiler might not support either -fcf-protection or -mstackrealign, retrying without both"
             EXTRA_OPTS=""
-            $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $FORT_OPTS $srcdir/hello_hard.c
+            $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $FORT_OPTS $srcdir/hello_hard.c > $G_OUT 2>&1
             if [ $? != 0 ];
             then
-                echo "$TEST_NAME: Failed :-("
+                echo " $TEST_NAME: SKIP: Could not compile test sources"
+		cat $G_OUT
                 end_test
-                exit 1
+                exit $EXIT_TEST_SKIPPED
             fi
         fi
     fi
@@ -52,36 +53,50 @@ $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS $FORT_OPTS $OPTS $EXTRA_OPTS $srcdir/hello
 $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS $FORT_OPTS $OPTS $EXTRA_OPTS $srcdir/hello_lib.c
 $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS -Ofast     $OPTS $EXTRA_OPTS $srcdir/hello3.c
 $GCC -c -fplugin=$PLUGIN $PLUGIN_OPTS $FORT_OPTS $OPTS $EXTRA_OPTS $srcdir/hello_hard.c
-
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS hello_hard.o hello2.o hello3.o hello_lib.o -o bad-fast-test.exe
-
-AOPTS="--ignore-gaps --skip-all --test-fast --suppress-version-warnings"
-$ANNOCHECK $AOPTS bad-fast-test.exe > fast.out
-grep -e "MAYB: test: fast" fast.out
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS hello_hard.o hello2.o hello3.o hello_lib.o -o $EXE > $G_OUT 2>&1
 if [ $? != 0 ];
 then
-    echo "$TEST_NAME: FAIL: annocheck did not detect incosistent use of -Ofast"
-    echo "$TEST_NAME: Annocheck command: $ANNOCHECK $AOPTS fast-test.exe"
-    echo "$TEST_NAME: Annocheck output: "
-    cat fast.out
-    uuencode bad-fast-test.exe bad-fast-test.exe
+    echo " $TEST_NAME: SKIP: Could not compile test files"
+    cat $G_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_SKIPPED
 fi
+
+AOPTS="--ignore-gaps --skip-all --test-fast --suppress-version-warnings"
+
+COMMAND="$ANNOCHECK $AOPTS $EXE"
+$COMMAND > $A_OUT
+grep -q -e"MAYB: test: fast" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not detect incosistent use of -Ofast"
+    echo " $TEST_NAME: Annocheck command: $COMMAND"
+    echo " $TEST_NAME: Annocheck output: "
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck detected an incosistent use of -Ofast"
+
+#-----------------------------------------------------------------------------------
 
 TEST_NAME=fast2
 
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -Ofast $OPTS $EXTRA_OPTS $srcdir/fast.c -lm -o good-fast.exe
-$ANNOCHECK $AOPTS --verbose good-fast.exe > good-fast.out
-grep -e "PASS: fast test" -e "skip: fast test because" good-fast.out
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -Ofast $OPTS $EXTRA_OPTS $srcdir/fast.c -lm -o $EXE
+
+COMMAND="$ANNOCHECK $AOPTS --verbose $EXE"
+$COMMAND > $A_OUT
+grep -q -e"PASS: fast test" -e "skip: fast test because" $A_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: annocheck complained about a legitimate use of -Ofast"
-    echo "$TEST_NAME: Annocheck command: $ANNOCHECK $AOPTS fast2.exe"
-    $ANNOCHECK $AOPTS --verbose good-fast.exe 
-    uuencode good-fast.exe good-fast.exe
+    echo "$TEST_NAME: Annocheck command: $COMMAND"
+    cat $A_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
+
+echo "$TEST_NAME: PASS: annocheck did not complain about a legitimate use of -Ofast"
 
 end_test

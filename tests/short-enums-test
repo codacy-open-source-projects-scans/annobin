@@ -1,0 +1,90 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck detects inconsistent use of -fshort-enums via --test-short-enums
+
+TEST_NAME=short-enums
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-c -O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+
+start_test
+
+# Part 1: Compile all files consistently (no -fshort-enums) - should PASS
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello_lib.c
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test objects"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+$GCC hello.o hello2.o hello3.o hello_lib.o -pie -Wl,-z,now,-z,relro -o $EXE
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link test executable"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+SKIPS="--skip-all --test-short-enums --suppress-version-warnings"
+A_COMMAND="$ANNOCHECK $EXE $SKIPS --verbose"
+$A_COMMAND > $A_OUT
+grep -q -e"FAIL: short-enums test" $A_OUT
+if [ $? == 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck incorrectly failed a binary compiled consistently without -fshort-enums"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck PASSed a binary compiled consistently without -fshort-enums"
+
+#---------------------------------------------------------------
+
+# Part 2: Compile with mixed -fshort-enums (inconsistent)
+
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -fshort-enums $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $srcdir/hello_lib.c && \
+    $GCC hello.o hello2.o hello3.o hello_lib.o -pie -Wl,-z,now,-z,relro -o $EXE
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link test executable with mixed -fshort-enums"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+A_COMMAND="$ANNOCHECK $EXE $SKIPS"
+$A_COMMAND > $A_OUT
+grep -q -e"FAIL: short-enums test" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not detect inconsistent -fshort-enums usage"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck FAILed a binary compiled with inconsistent -fshort-enums usage"
+
+end_test

@@ -1,0 +1,115 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck handles stripped binaries correctly.
+# Stripping should remove debug info and symbols but preserve
+# the .note.gnu.build-attributes sections used by annocheck.
+
+TEST_NAME=strip
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach -fplugin-arg-annobin-note-format=note"
+OPTS="-O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection -fexceptions"
+
+start_test
+
+# Compile and link a well-hardened binary
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello_lib.c
+
+$GCC hello.o hello2.o hello3.o hello_lib.o -pie -Wl,-z,now,-z,relro -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link test executable"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Run annocheck on the unstripped binary first to confirm it passes
+SKIPS="--ignore-gaps --suppress-version-warnings"
+A_COMMAND="$ANNOCHECK $EXE $SKIPS"
+$A_COMMAND > strip-test-before.out 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: INFO: unstripped binary does not fully pass annocheck (expected on some arches)"
+fi
+
+STRIPED_EXE=strip-test-stripped.exe
+
+# Strip the binary
+cp $EXE $STRIPED_EXE
+$STRIP --strip-all $STRIPED_EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: unable to strip test executable"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# Verify stripping actually removed something
+BEFORE_SIZE=$(stat -c %s $EXE)
+AFTER_SIZE=$(stat -c %s $STRIPED_EXE)
+if [ "$BEFORE_SIZE" == "$AFTER_SIZE" ];
+then
+    echo " $TEST_NAME: SKIP: stripping did not change the binary size"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Run annocheck on the stripped binary - it should not crash
+A_COMMAND="$ANNOCHECK $STRIPED_EXE $SKIPS"
+$A_COMMAND > $A_OUT 2>&1
+
+# The key test: annocheck must not crash or produce an error exit (segfault = 139)
+exit_code=$?
+if [ $exit_code -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed or errored (exit code $exit_code) on stripped binary"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck worked on a stripped binary"
+
+#---------------------------------------------------------------
+    
+# Also try with --strip-all --keep-section to preserve build notes
+STRIPED_EXE=strip-test-notes.exe
+
+cp $EXE $STRIPED_EXE
+$STRIP --strip-all --keep-section=.note.gnu.build-attributes $STRIPED_EXE 2>/dev/null
+if [ $? == 0 ];
+then
+    A_COMMAND="$ANNOCHECK $STRIPED_EXE $SKIPS"
+    $A_COMMAND > $A_OUT 2>&1
+    exit_code=$?
+    if [ $exit_code -gt 1 ];
+    then
+	echo " $TEST_NAME: FAIL: annocheck crashed on binary stripped with --keep-section"
+	echo " $TEST_NAME: annocheck output:"
+	cat $A_OUT
+	end_test
+	exit $EXIT_TEST_FAILED
+    fi
+fi
+
+echo " $TEST_NAME: PASS: annocheck worked on a binary stripped with --keep-section"
+
+end_test

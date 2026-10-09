@@ -19,28 +19,43 @@ start_test
 
 #---------------------------------------------------------------------------------
 
+# Make sure than an ordinary compilation works
+COMMAND="$GCC -fplugin=$PLUGIN -c $srcdir/hello.c"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: Could not compile source file with ELF format notes"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+#---------------------------------------------------------------------------------
+
+# Now add in a note format selection option
 PLUGIN_OPTS="-fplugin-arg-annobin-note-format=note"
 
 COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c"
-$COMMAND > gcc.out
+$COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: FAIL: Could not compile source file with ELF format notes"
     echo " $TEST_NAME: command: $COMMAND"
-    cat gcc.out
+    cat $G_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
 COMMAND="$ANNOCHECK -v --ignore-gaps --skip-all hello.o"
-$COMMAND > annocheck.out
+$COMMAND > $A_OUT
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: FAIL: annocheck did not like ELF format notes"
     echo " $TEST_NAME: command: $COMMAND"
-    cat annocheck.out
+    cat $A_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
 echo " $TEST_NAME: PASS: ELF note format test"
@@ -50,25 +65,25 @@ echo " $TEST_NAME: PASS: ELF note format test"
 PLUGIN_OPTS="-fplugin-arg-annobin-note-format=string"
 
 COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c"
-$COMMAND > gcc.out
+$COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: FAIL: Could not compile source file with string format notes"
     echo " $TEST_NAME: command: $COMMAND"
-    cat gcc.out
+    cat $G_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
 COMMAND="$ANNOCHECK -v --ignore-gaps --skip-all hello.o"
-$COMMAND > annocheck.out
+$COMMAND > $A_OUT
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: FAIL: annocheck did not like string format notes"
     echo " $TEST_NAME: command: $COMMAND"
-    cat annocheck.out
+    cat $A_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
 echo " $TEST_NAME: PASS: string note format test"
@@ -78,47 +93,49 @@ echo " $TEST_NAME: PASS: string note format test"
 PLUGIN_OPTS=""
 
 COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/unused_code.c"
-ANNOBIN=note-format=string $COMMAND > gcc.out
+ANNOBIN=note-format=string $COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: FAIL: Could not compile unused.c source file with string format notes"
     echo " $TEST_NAME: command: ANNOBIN=note-format=string $COMMAND"
-    cat gcc.out
+    cat $G_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
 COMMAND="$ANNOCHECK -v --ignore-gaps --skip-all --test-optimization unused_code.o"
-$COMMAND > annocheck.out
+$COMMAND > $A_OUT
 if [ $? == 0 ];
 then
     echo " $TEST_NAME: FAIL: annocheck did not issue a FAIL result"
     echo " $TEST_NAME: command: $COMMAND"
-    cat annocheck.out
+    cat $A_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
-grep -e "level too low" annocheck.out
+grep -q -e"level too low" $A_OUT
 if [ $? != 0 ];
 then
-    echo " $TEST_NAME: FAIL: annocheck did not issue the expected FAIL result"
+    echo " $TEST_NAME: FAIL: annocheck did not report optimization level being too low"
     echo " $TEST_NAME: command: $COMMAND"
-    cat annocheck.out
+    cat $A_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
-grep -e "unused_code.c" annocheck.out
+grep -q -e"unused_code.c" $A_OUT
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: FAIL: annocheck did not report the source file"
     echo " $TEST_NAME: command: $COMMAND"
-    cat annocheck.out
+    cat $A_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
+
+echo " $TEST_NAME: PASS: string note format test"
 
 end_test
 
-echo " $TEST_NAME: PASS: string note filename test"
+

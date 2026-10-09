@@ -44,5 +44,10 @@ lint:
 	@find $(srcdir)/gcc-plugin $(srcdir)/clang-plugin $(srcdir)/llvm-plugin $(srcdir)/annocheck \
 		\( -name "*.cc" -o -name "*.cpp" \) \
 		-not -path "*/libiberty/*" \
-		-exec clang-tidy --config-file $(srcdir)/.clang-tidy {} -- \
-		-I. -Igcc-plugin -Iannocheck -I.. $(CPPFLAGS) \;
+		-print \
+		-exec clang-tidy -header-filter=$(srcdir) --config-file $(srcdir)/.clang-tidy {} -- \
+		-I'$(top_builddir)' -Igcc-plugin -Iannocheck  -I'$(top_srcdir)' $(CPPFLAGS) \;
+
+# The meson build system uses a target called 'test' to run the
+# testuite, so for user convenience we also support that target.
+test: check

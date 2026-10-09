@@ -1,0 +1,151 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck can process ZIP archives.
+
+TEST_NAME=zip
+. $srcdir/common.sh
+
+# Before we start, make sure that the zip program is installed.
+if ! command -v "$ZIP" >/dev/null 2>&1; then
+    echo " $TEST_NAME: SKIP: zip program '$ZIP' not installed"
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Annocheck uses 'unzip' so make sure that is available as well
+if ! command -v unzip >/dev/null 2>&1; then
+    echo " $TEST_NAME: SKIP: the unzip program is not installed"
+    exit $EXIT_TEST_SKIPPED
+fi
+
+start_test
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+
+# Compile several object files with the annobin plugin
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello_lib.c > $G_OUT 2>&1
+
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test files"
+    echo " $TEST_NAME: compiler output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# -----------------------------------------------------------------
+# Test 1: Create a zip file and check that annocheck can process it
+# -----------------------------------------------------------------
+
+ARCHIVE=test-multi.zip
+COMMAND="$ZIP $ARCHIVE hello.o hello2.o hello3.o hello_lib.o"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to create zip file"
+    echo " $TEST_NAME: command: $COMMAND"
+    echo " $TEST_NAME: output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+SKIPS="--ignore-gaps --suppress-version-warnings --skip-lto --skip-cf-protection"
+$ANNOCHECK $ARCHIVE $SKIPS > $A_OUT 2>&1
+
+exit_code=$?
+if [ $exit_code -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed or errored (exit code $exit_code) on zip file"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# Verify annocheck actually examined the archive members
+# At this point we are not really worried if the tests PASSed or FAILed.
+# FIXME: We should count the number of PASS/FAIL results.
+grep -q -e "PASS\|FAIL:\|MAYB:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck produced no test results for archive"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck processed a multi-member zip file"
+
+# ----------------------------------------------------------------------
+# Test 2: The output should show zip filename as well as the member name
+# ----------------------------------------------------------------------
+
+grep -q "$ARCHIVE:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck verbose output does not reference zip filename"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck verbose output references zip filename"
+
+# ------------------------------------------
+# Test 3: Zip file with a single object file
+# ------------------------------------------
+
+ARCHIVE=test-single.zip
+COMMAND="$ZIP $ARCHIVE hello.o"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to create single-member archive"
+    echo " $TEST_NAME: command: $COMMAND"
+    echo " $TEST_NAME: output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+$ANNOCHECK $ARCHIVE $SKIPS > $A_OUT 2>&1
+
+exit_code=$?
+if [ $exit_code -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed (exit code $exit_code) on single-member zip file"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+grep -q -e "PASS\|FAIL:\|MAYB:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck produced no test results for single-member zip file"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck processed a single-member zip file"
+
+end_test

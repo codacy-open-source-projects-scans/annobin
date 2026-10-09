@@ -18,13 +18,32 @@
 TEST_NAME=section-size
 . $srcdir/common.sh
 
-PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach -fplugin-arg-annobin-note-format=note"
 
 start_test
 
 $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c $srcdir/hello2.c $srcdir/hello3.c $srcdir/hello_lib.c
-$GCC hello.o hello2.o hello3.o hello_lib.o -o section-size.exe
+$GCC hello.o hello2.o hello3.o hello_lib.o -o $EXE > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: Could not compile source files"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
 
-$ANNOCHECK -v --disable-hardened --section-size=.gnu.build.attributes --human --ignore-unknown .
+SEC=.gnu.build.attributes
+
+$ANNOCHECK -v --disable-hardened --sec=$SEC --human --ignore-unknown $EXE > $A_OUT
+grep -q -e"$SEC" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not report section size"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck reported the size of section $SEC"
 
 end_test

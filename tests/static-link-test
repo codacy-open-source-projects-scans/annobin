@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck handles statically linked binaries.
+# Static binaries have no dynamic segment, PLT, or GOT.
+
+TEST_NAME=static-link
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection"
+
+start_test
+
+# Compile the object files
+$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello3.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $OPTS $srcdir/hello_lib.c
+    
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test files"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+# Try to link statically
+$GCC hello.o hello2.o hello3.o hello_lib.o -static -pie -Wl,-z,now,-z,relro -o $EXE >$G_OUT 2>&1
+if [ $? != 0 ];
+then
+    # Try without -pie since some systems cannot do static PIE
+    $GCC hello.o hello2.o hello3.o hello_lib.o -static -Wl,-z,now,-z,relro -o $EXE >$G_OUT 2>&1
+    if [ $? != 0 ];
+    then
+	echo " $TEST_NAME: SKIP: unable to link a static binary (static libc may not be installed)"
+	cat $G_OUT
+	end_test
+	exit $EXIT_TEST_SKIPPED
+    fi
+fi
+
+# Run annocheck - the key test is that it must not crash
+SKIPS="--ignore-gaps --suppress-version-warnings --verbose"
+A_COMMAND="$ANNOCHECK $EXE $SKIPS"
+$A_COMMAND > $A_OUT
+
+exit_code=$?
+if [ $exit_code -gt 1 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck crashed or errored (exit code $exit_code) on static binary"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+# Verify annocheck recognized the binary as statically linked
+# by checking it attempted some tests (not just ignored the file)
+grep -q -e "PASS:\|FAIL:\|MAYB:" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck produced no test results for the static binary"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+end_test

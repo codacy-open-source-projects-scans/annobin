@@ -35,22 +35,15 @@ AC_DEFUN([BUILD_CLANG_PLUGIN], [
 
 AC_ARG_WITH(
   [clang-plugin],
-  [AC_HELP_STRING([--without-clang-plugin],[do not build the clang plugin])],
-  [with_clang_plugin=no],
-  [:])
-
-# Test suppressed because on Debian systems the Clang headers are
-# installed in a non-standard location.
-# AS_IF([test "x$with_clang_plugin" != xno],
-# 
-# [
-# # Change for clang++ and clang-devel packages.
-# AC_CHECK_HEADER([clang/Frontend/FrontendPluginRegistry.h], ,[AC_MSG_ERROR(["Required header 'FrontendPluginRegistry.h' not found.  Have you installed the clang-devel package ?"])])
-# ],
-# [:])
+  [AC_HELP_STRING([--with-clang-plugin],[build the clang plugin (yes, no, or auto) @<:@default=auto@:>@])],
+  [with_clang_plugin=$withval],
+  [with_clang_plugin=auto])
 
 ])
 
+# FIXME: Really this should take the same arguments as the
+# other plugin options, ie no/yes/auto.  But the gcc plugin
+# is a lot harder to test for and configure.
 AC_DEFUN([BUILD_GCC_PLUGIN], [
 
 AC_ARG_WITH(
@@ -64,9 +57,9 @@ AC_DEFUN([BUILD_LLVM_PLUGIN], [
 
 AC_ARG_WITH(
   [llvm-plugin],
-  [AC_HELP_STRING([--without-llvm-plugin],[do not build the llvm plugin])],
-  [with_llvm_plugin=no],
-  [:])
+  [AC_HELP_STRING([--with-llvm-plugin],[build the llvm plugin (yes, no, or auto) @<:@default=auto@:>@])],
+  [with_llvm_plugin=$withval],
+  [with_llvm_plugin=auto])
 ])
 
 AC_DEFUN([BUILD_DOCS], [

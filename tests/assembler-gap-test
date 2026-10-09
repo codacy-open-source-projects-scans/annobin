@@ -24,72 +24,112 @@ start_test
 # Assemble the file, and include debug information which will
 # identify the producer as being AS.
 
-$GAS --gdwarf-2 $srcdir/gap.S -o gap1.o
+$GAS --gdwarf-2 $srcdir/gap.S -o gap1.o > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to assemble test source"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
 
 # Compile a C source file as well, so that we end up with a binary
 # that was partially built by GCC, and partially not.  Note - we
 # are not using all of the hardening options as we want to be sure
 # that annocheck will notice.
 
-pwd
-echo "compilation command: $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC" 
-
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC $srcdir/hello.c 
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC $srcdir/hello2.c 
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC $srcdir/hello3.c 
+$GCC     -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC $srcdir/hello.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC $srcdir/hello2.c && \
+    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c -O2 -fPIC $srcdir/hello3.c
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test sources"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
 
 # Put our assembled file between C files, so that the gap will be noticed.
-$GCC -nostartfiles -e 0 hello.o hello2.o gap1.o hello3.o -o assembler-gap-test1.exe \
+COMMAND="$GCC -nostartfiles -e 0 hello.o hello2.o gap1.o hello3.o -o $EXE \
      -Wl,--defsym,extern_func3=0 \
-     -Wl,-z,now -pie
+     -Wl,-z,now -pie"
+$COMMAND >$G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to link test objects"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
 
-$ANNOCHECK --skip-all --test-gaps -v -v --suppress-version-warnings assembler-gap-test1.exe > assembler-gap-test1.out
+$ANNOCHECK --skip-all --test-gaps -v -v --suppress-version-warnings $EXE > $A_OUT
 
 # FAIL if a gap is NOT reported
 # The "skip: gaps test" match is for the ARM where annobin notes are not expected.
-grep --silent -e "gaps were detected" -e "not all of the .text section is covered by notes" -e "skip: gaps test" assembler-gap-test1.out
+grep -q -e "gaps were detected" \
+     -e "not all of the .text section is covered by notes" \
+     -e "skip: gaps test" \
+     $A_OUT
 if [ $? != 0 ];
 then
-    echo "  $TEST_NAME: FAIL: GAP *not* found in notes:"
-    echo "  Annocheck output:"
-    cat assembler-gap-test1.out
-    echo "  Notes:"
-    $ANNOCHECK --disable-hardened --enable-notes assembler-gap-test1.exe
-    exit 1
+    echo " $TEST_NAME: FAIL: GAP *not* found in notes:"
+    echo " Annocheck output:"
+    cat $A_OUT
+    echo " Notes:"
+    $ANNOCHECK --disable-hardened --enable-notes $EXE
+    end_test
+    exit $EXIT_TEST_FAILED
 fi
+
+echo " $TEST_NAME: PASS: GAP found in notes"
+
+#-------------------------------------------------------------------------------
 
 # Repeat the test, but this time, have the assembler generate a generic note.
 
-$GAS --generate-missing-build-notes=yes $srcdir/gap.S -o gap2.o
+$GAS --generate-missing-build-notes=yes $srcdir/gap.S -o gap2.o > $G_OUT 2>&1
 if [ $? != 0 ];
 then
-    echo "  $TEST_NAME: Assembler does not support generating build notes.  Skipping test."
-    exit 0
+    echo " $TEST_NAME: SKIP: Assembler does not support generating build notes."
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
 fi
 
-$GCC -nostartfiles -e 0 hello.o hello2.o gap2.o hello3.o -o assembler-gap-test2.exe \
+$GCC -nostartfiles -e 0 hello.o hello2.o gap2.o hello3.o -o $EXE \
      -Wl,--defsym,extern_func3=0 \
      -Wl,-z,now -pie -Wl,-Map,assembler-gap-test2.map
-
-$ANNOCHECK -v -v assembler-gap-test2.exe --skip-all --test-notes --test-gaps --suppress-version-warnings > assembler-gap-test2.out
-
-# FAIL if a gap IS reported
-grep --silent -e "no gaps found" -e "skip: gaps test" assembler-gap-test2.out
 if [ $? != 0 ];
 then
-    echo "  $TEST_NAME: FAIL: GAP reported (with assembler covered by a note):"
-    echo "  Annocheck output:"
-    cat assembler-gap-test2.out
-    echo "  Notes:"
-    $ANNOCHECK --disable-hardened --enable-notes assembler-gap-test2.exe
-    echo "  Disassembly:"
-    objdump -d assembler-gap-test2.exe
-    echo "  Linker Map:"
-    cat assembler-gap-test2.map
-    echo "  Readelf hello2.o"
-    readelf -SWg hello2.o assembler-gap-test2.exe
-
-    exit 1
+    echo " $TEST_NAME: SKIP: Could not link for a second time."
+    end_test
+    exit $EXIT_TEST_SKIPPED
 fi
+
+$ANNOCHECK -v -v $EXE --skip-all --test-notes --test-gaps --suppress-version-warnings > $A_OUT
+
+# FAIL if a gap IS reported
+grep -q -e "no gaps found" -e "skip: gaps test" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: GAP reported (with assembler covered by a note):"
+    echo " Annocheck output:"
+    cat $A_OUT
+
+    # Extra debugging commands:
+    # echo "  Notes:"
+    # $ANNOCHECK --disable-hardened --enable-notes $EXE
+    # echo "  Disassembly:"
+    # objdump -d $EXE
+    # echo "  Linker Map:"
+    # cat assembler-gap-test2.map
+    # echo "  Readelf hello2.o"
+    # readelf -SWg hello2.o $EXE
+
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: GAP not reported with assembler covered by a note"
 
 end_test

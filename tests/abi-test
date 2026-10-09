@@ -20,6 +20,18 @@ OPTS="-O2 -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong -D_GLIBCXX_ASSERTIO
 
 start_test
 
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c $GCC_OPTS"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo "$TEST_NAME: SKIP: could not compile test file"
+    echo "$TEST_NAME: gcc command line: $COMMAND"
+    echo "$TEST_NAME: gcc output:"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
 $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS \
      -g -c \
      -fno-stack-protector \
@@ -43,10 +55,16 @@ $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS \
     -o libhello.so \
   $srcdir/hello_lib.c
 
-$GCC \
-     -L . -pie \
-     -Wl,-z,now,-z,relro \
- hello.o hello2.o hello3.o -lhello -o abi-test.exe
+$GCC -L . -pie -Wl,-z,now,-z,relro \
+ hello.o hello2.o hello3.o -lhello -o $EXE > $G_OUT 2>&1
+
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: unable to compile & link objects"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
 
 # $OBJCOPY --merge-notes abi-test.exe abi-test-merged.exe
 
@@ -63,6 +81,14 @@ $GCC \
 $srcdir/../scripts/check-abi  --readelf=$READELF --inconsistencies \
 				--ignore-FORTIFY --ignore-stack-prot \
 				--ignore-gaps --ignore-ABI \
-				abi-test.exe
+				$EXE
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: check-abi reported inconsistencies"
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: check-abi found no inconsistencies"
 
 end_test

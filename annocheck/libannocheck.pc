@@ -8,7 +8,7 @@ includedir=${prefix}/include
 
 Name: libannocheck
 Description: library for checking the security hardening status of binaries
-Version: 13.02
+Version: 13.20
 URL: https://sourceware.org/annobin/
 
 Libs: -L${libdir} -lannocheck

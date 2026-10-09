@@ -19,20 +19,22 @@ PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
 GCC_OPTS="-D__FORTIFY_SOURCE=2 -DGLIBCXX_ASSERTIONS -flto"
 
 start_test
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c $GCC_OPTS > gcc.out 2>&1
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c $GCC_OPTS"
+$COMMAND > $G_OUT 2>&1
 if [ $? != 0 ];
 then
-    echo "$TEST_NAME: FAIL: could not compile test file"
-    echo "$TEST_NAME: gcc command line: $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -c $srcdir/hello.c $GCC_OPTS"
+    echo "$TEST_NAME: SKIP: could not compile test file"
+    echo "$TEST_NAME: gcc command line: $COMMAND"
     echo "$TEST_NAME: gcc output:"
-    cat gcc.out
+    cat $G_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_SKIPPED
 fi
 
 result=0
 
-grep -q "did you mean: -D_GLIBCXX_ASSERTIONS ?" gcc.out
+grep -q "did you mean: -D_GLIBCXX_ASSERTIONS ?" $G_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: did not find expected warning message about -D_GLIBCXX_ASSERTIONS typo"
@@ -41,7 +43,7 @@ else
     echo "$TEST_NAME: PASS: found expected warning message about -D_GLIBCXX_ASSERTIONS typo"
 fi
 
-grep -q "did you mean: -D_FORTIFY_SOURCE ?" gcc.out
+grep -q "did you mean: -D_FORTIFY_SOURCE ?" $G_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: did not find expected warning message about -D_FORTIFY_SOURCE typo"
@@ -50,7 +52,7 @@ else
     echo "$TEST_NAME: PASS: found expected warning message about -D_FORTIFY_SOURCE typo"
 fi
 
-grep -q -e "-D_FORTIFY_SOURCE not defined" gcc.out
+grep -q -e "-D_FORTIFY_SOURCE not defined" $G_OUT
 if [ $? != 0 ];
 then
     echo "$TEST_NAME: FAIL: did not find expected warning message about missing -D_FORTIFY_SOURCE"
@@ -61,10 +63,11 @@ fi
 
 if [ $result == 1 ];
 then
+    echo "$TEST_NAME: FAIL: no warning messages from GCC"
     echo "$TEST_NAME: output from gcc:"
-    cat gcc.out
+    cat $G_OUT
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
 end_test

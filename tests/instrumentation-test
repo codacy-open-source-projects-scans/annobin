@@ -15,8 +15,6 @@
 
 # Test that a warning is issued for instrumented code
 
-rm -f hello.o property-note.o hello3.o property-note-test.exe property-note-test.out
-
 TEST_NAME=instrumentation
 . $srcdir/common.sh
 
@@ -25,19 +23,28 @@ OPTS="-c -O2 -D_FORTIFY_SOURCE=2 -fPIE -Wall -fstack-protector-strong -D_GLIBCXX
 
 start_test
 
+EXE=instrumentation-test.exe
+
 $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $srcdir/hello_hard.c
+$GCC -pie hello_hard.o -o $EXE -Wl,--defsym,big_stack=0 -Wl,-z,now
 if [ $? != 0 ];
 then
-    echo "Failed to compile :-("
-    exit 1
+    echo "$TEST_NAME: SKIP: Unable to compile test source code"
+    end_test
+    exit $EXIT_TEST_SKIPPED
 fi
 
-$GCC -pie hello_hard.o -o instrumentation-test.exe -Wl,--defsym,big_stack=0 -Wl,-z,now
+A_OUT=instrumentation-test.out
+$ANNOCHECK --suppress-version-warnings --skip-all --test-instrumentation $EXE > $A_OUT
 
-$ANNOCHECK --suppress-version-warnings instrumentation-test.exe > instrumentation-test.out
-
-cat instrumentation-test.out
-
-grep --silent "Instrumentation enabled" instrumentation-test.out
+grep -q -e "MAYB: test: instrumentation" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not FAIL for executable compiled with instrumentation"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
 
 end_test

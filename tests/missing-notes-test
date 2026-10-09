@@ -48,8 +48,9 @@ then
 	    $GCC -fplugin=$PLUGIN $PLUGIN_OPTS -g $OPTS $EXTRA_OPTS $srcdir/hello_hard.c 
 	    if [ $? != 0 ];
 	    then
-		echo "Failed :-("
-		exit 1
+		echo "$TEST_NAME: SKIP: Unable to compile test sources"
+		end_test
+		exit $EXIT_TEST_SKIPPED
 	    fi
 	fi
     fi
@@ -57,20 +58,33 @@ fi
 
 $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $EXTRA_OPTS $srcdir/hello.c 
 
-# NB/ This file is compiled without the plugin enabled!
+# NB/ These files are compiled without the plugin enabled!
 $GCC $OPTS $EXTRA_OPTS $srcdir/hello2.c 
-
-$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $EXTRA_OPTS $srcdir/hello3.c
+$GCC $OPTS $EXTRA_OPTS $srcdir/hello3.c
 
 $GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS $EXTRA_OPTS -shared $srcdir/hello_lib.c -o libhello.so
 
+EXE=missing-notes-test.exe
 $GCC -L . -pie -Wl,-z,now -Wl,-z,relro \
-     hello.o hello2.o hello3.o -lhello -o missing-notes-test.exe
+     hello.o hello2.o hello3.o -lhello -o $EXE
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test files"
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
 
-# Debugging...
-# readelf --wide --notes --sections --syms missing-notes-test.exe
-
+A_OUT=missing-notes-test.out
 # FIXME - we should check that the notes were parsed correctly...
-$ANNOCHECK -v --suppress-version-warnings missing-notes-test.exe
+$ANNOCHECK -v --suppress-version-warnings --skip-lto --skip-warnings $EXE > $A_OUT
+grep -q -e"FAIL: gaps test" -e "skip: gaps test because string notes imply full coverage" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not FAIL for object compiled with gaps"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
 
 end_test

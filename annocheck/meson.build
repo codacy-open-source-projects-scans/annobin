@@ -28,6 +28,8 @@ annocheck = executable(
     'annocheck.c',
     'notes.c',
     'hardened.c',
+    'size.c',
+    'timing.c',
     'libiberty/concat.c',
     'libiberty/cp-demangle.c',
     'libiberty/cplus-dem.c',

@@ -12,7 +12,7 @@ AC_CONFIG_SRCDIR([annobin-global.h.in])
 # also update VERSION in the PROJECT section of meson.build.
 # Also note that the number after the decimal point is limited
 # to two digits due to various assumptions in the code.
-ANNOBIN_VERSION=13.12
+ANNOBIN_VERSION=13.32
 AC_SUBST(ANNOBIN_VERSION)
 
 AC_CANONICAL_SYSTEM
@@ -42,7 +42,7 @@ AC_LANG(C++)
 LT_INIT([disable-static])
 LT_OUTPUT
 
-# Determine the target specific part of the plugin.
+# Determine the target specific part of the GCC plugin.
 target_plugin="dummy.annobin.lo"
 case ${target} in
   aarch64*-*-*)
@@ -103,6 +103,187 @@ fi
 MAINT=$MAINTAINER_MODE_TRUE
 AC_SUBST(MAINT)dnl
 
+# Check for debuginfod availability
+DEBUGINFOD
+
+DISABLE_RPATH
+
+ACX_LT_HOST_FLAGS
+AC_SUBST(target_noncanonical)
+AC_TYPE_INT64_T
+AC_TYPE_UINT64_T
+
+AM_SILENT_RULES([yes])
+
+AC_CONFIG_FILES(Makefile)
+AC_CONFIG_FILES(annobin-global.h)
+
+#-------------------------------------------------------------------
+
+if test "$with_annocheck" != no; then
+
+  AC_CHECK_HEADER([dwarf.h],
+                  [], [AC_MSG_ERROR([Cannot find elfutils headers])])
+
+  AC_CONFIG_FILES(annocheck/libannocheck.h)
+  AC_CONFIG_FILES([annocheck/libannocheck.pc])
+  AC_CONFIG_FILES(annocheck/Makefile)
+fi
+
+AM_CONDITIONAL([COND_ANNOCHECK], [test "$with_annocheck" != no])
+
+#-------------------------------------------------------------------
+
+if test "$with_docs" != no; then
+  AC_CONFIG_FILES(doc/Makefile)
+fi
+
+AM_CONDITIONAL([COND_DOCS], [test "$with_docs" != no])
+
+#-------------------------------------------------------------------
+
+if test "$with_tests" != no; then
+  if test "x$with_debuginfod" != xno; then
+  
+    AC_PATH_PROG(DEBUGINFODPROG, debuginfod)
+    if test -z "$ac_cv_path_DEBUGINFODPROG"; then
+      # Not an error because other tests can still be run
+      AC_MSG_WARN([Could not find debuginfod - the test will be skipped])
+    fi
+    
+    AC_PATH_PROG(SS, ss)
+    if test -z "$ac_cv_path_SS"; then
+      # Not an error, because other tests can still be run.
+      AC_MSG_WARN([Could not find ss - the debuginfo test will be skipped])
+    fi
+  fi
+
+  AC_CONFIG_FILES(tests/Makefile)
+fi
+
+AM_CONDITIONAL([COND_TESTS], [test "$with_tests" != no])
+
+#-------------------------------------------------------------------
+# Check to see if we can build the clang plugin.
+
+# First check to see if Clang is installed.
+if test "$with_clang_plugin" != no; then
+
+  # Paranoia: make sure that the user gave us a valid argument to the --with-clang-plugin option.
+  if test "$with_clang_plugin" = yes; then
+    :
+  elif test "$with_clang_plugin" = auto; then
+    :
+  else
+    AC_MSG_ERROR([Unrecognised argument to --with-clang-plugin.  Expected yes, no or auto, got '$with_clang_plugin'])
+    with_clang_plugin=auto
+  fi
+	
+  AC_CHECK_TARGET_TOOL(CLANGXX, clang++)
+
+  if test -z "$ac_ct_CLANGXX"; then
+    if test "$with_clang_plugin" = yes; then
+      AC_MSG_ERROR([Could not find clang++])
+    else # $with_clang_plugin = auto
+      AC_MSG_WARN([Could not find clang++ - disabling clang plugin])
+      with_clang_plugin=no
+    fi
+  fi
+fi
+
+# If that check succeeded then check to see llvm-config is installed.
+# We need llvm-config in order to find the clang header files.
+if test "$with_clang_plugin" != no; then
+
+  AC_PATH_PROG(LLVM_CONFIG, llvm-config)
+
+  if test -z "$ac_cv_path_LLVM_CONFIG"; then
+    if test "$with_clang_plugin" = yes; then
+      AC_MSG_ERROR([Could not find llvm-config])
+    else # $with_clang_plugin = auto
+      AC_MSG_WARN([Could not find llvm-config - disabling clang plugin])
+      with_clang_plugin=no
+    fi
+  fi
+fi
+
+# Lastly, if both clang and llvm-config are installed, check
+# to see if the clang development headers are available.
+if test "$with_clang_plugin" != no; then
+
+  CPPFLAGS="$CPPFLAGS -I$(llvm-config --includedir)"
+  AC_CHECK_HEADER([clang/Basic/Version.h],
+                  [],
+                  [if test "$with_clang_plugin" = yes; then
+                     AC_MSG_ERROR([Cannot find Clang development headers])
+                   else # $with_clang_plugin = auto
+                     AC_MSG_WARN([Cannot find Clang development headers - disabling clang plugin])
+                     with_clang_plugin=no
+                   fi])
+
+fi
+
+# Then if all is well, enable the plugin.
+if test "$with_clang_plugin" != no; then
+  with_clang_plugin=yes
+  AC_CONFIG_FILES(clang-plugin/Makefile)
+fi
+
+AM_CONDITIONAL([COND_CLANG], [test "$with_clang_plugin" != no])
+
+#-------------------------------------------------------------------
+# Check to see if we can build the llvm plugin.
+
+# First check to see if llvm-config is installed.
+# We need it in order to find the headers.
+if test "$with_llvm_plugin" != no; then
+
+  # Paranoia: make sure that the user gave us a valid argument to the --with-llvm-plugin option.
+  if test "$with_llvm_plugin" = yes; then
+    :
+  elif test "$with_llvm_plugin" = auto; then
+    :
+  else
+    AC_MSG_ERROR([Unrecognised argument to --with-llvm-plugin.  Expected yes, no or auto, got '$with_llvm_plugin'])
+    with_llvm_plugin=auto
+  fi
+
+  AC_PATH_PROG(LLVM_CONFIG, llvm-config)
+
+  if test -z "$ac_cv_path_LLVM_CONFIG"; then
+    if test "$with_llvm_plugin" = yes; then
+      AC_MSG_ERROR([Could not find llvm-config])
+    else# $with_llvm_plugin = auto
+      AC_MSG_WARN([Could not find llvm-config - disabling llvm plugin])
+      with_llvm_plugin=no
+    fi
+  fi
+fi
+
+# Next check to see if the LLVM development headers are available.
+if test "$with_llvm_plugin" != no; then
+  CPPFLAGS="$CPPFLAGS -I$(llvm-config --includedir)"
+
+  AC_CHECK_HEADER([llvm/Pass.h],
+                  [],
+                  [if test "$with_llvm_plugin" = yes; then
+                     AC_MSG_ERROR([Cannot find LLVM development headers])
+                   else # $with_llvm_plugin = auto
+                     AC_MSG_WARN([Cannot find LLVM development headers - disabling llvm plugin])
+                     with_llvm_plugin=no
+                   fi])
+fi
+
+# Finally, if all is well, enable the plugin.
+if test "$with_llvm_plugin" != no; then
+  with_llvm_plugin=yes
+  AC_CONFIG_FILES(llvm-plugin/Makefile)
+fi
+
+AM_CONDITIONAL([COND_LLVM], [test "$with_llvm_plugin" != no])
+
+#-------------------------------------------------------------------
+# Check to see if we can build the gcc plugin.
 
 if test "x$with_gcc_plugin" != xno; then
 
@@ -156,85 +337,13 @@ if test "x$with_gcc_plugin" != xno; then
   AC_SUBST([plugindir])
 fi
 
-# Check for debuginfod availability
-DEBUGINFOD
-
-DISABLE_RPATH
-
-ACX_LT_HOST_FLAGS
-AC_SUBST(target_noncanonical)
-AC_TYPE_INT64_T
-AC_TYPE_UINT64_T
-
-AM_CONDITIONAL([COND_DOCS],       [test "$with_docs" != no])
-AM_CONDITIONAL([COND_TESTS],      [test "$with_tests" != no])
-AM_CONDITIONAL([COND_ANNOCHECK],  [test "$with_annocheck" != no])
-AM_CONDITIONAL([COND_CLANG],      [test "$with_clang_plugin" != no])
-AM_CONDITIONAL([COND_GCC_PLUGIN], [test "$with_gcc_plugin" != no])
-AM_CONDITIONAL([COND_LLVM],       [test "$with_llvm_plugin" != no])
-
-AM_SILENT_RULES([yes])
-
-AC_CONFIG_FILES(Makefile)
-AC_CONFIG_FILES(annobin-global.h)
-AC_CONFIG_FILES(annocheck/libannocheck.h)
-
-if test "$with_annocheck" != no -o "$with_gcc_plugin" != no; then
-  AC_CONFIG_HEADERS(gcc-plugin/config.h)
-fi
-
-if test "$with_docs" != no; then
-  AC_CONFIG_FILES(doc/Makefile)
-fi
-
-if test "$with_tests" != no; then
-  if test "x$with_debuginfod" != xno; then
-    AC_PATH_PROG(DEBUGINFODPROG, debuginfod)
-    if test -z "$ac_cv_path_DEBUGINFODPROG"; then
-      AC_MSG_ERROR([Could not find debuginfod])
-    fi
-    AC_PATH_PROG(SS, ss)
-    if test -z "$ac_cv_path_SS"; then
-      AC_MSG_ERROR([Could not find iproute])
-    fi
-  fi
-  AC_CONFIG_FILES(tests/Makefile)
-fi
-
-if test "$with_annocheck" != no; then
-  AC_CHECK_HEADER([dwarf.h],
-                  [], [AC_MSG_ERROR([Cannot find elfutils headers])])
-  AC_CONFIG_FILES(annocheck/Makefile)
-fi
-
-if test "$with_clang_plugin" != no; then
-  AC_CHECK_TARGET_TOOL(CLANGXX, clang++)
-  if test -z "$ac_ct_CLANGXX"; then
-    AC_MSG_ERROR([Could not find clang++])
-  fi
-  AC_PATH_PROG(LLVM_CONFIG, llvm-config)
-  if test -z "$ac_cv_path_LLVM_CONFIG"; then
-    AC_MSG_ERROR([Could not find llvm-config])
-  fi
-  AC_CHECK_HEADER([clang/Basic/Version.h],
-                  [], [AC_MSG_ERROR([Cannot find Clang development headers])])
-  AC_CONFIG_FILES(clang-plugin/Makefile)
-fi
-
 if test "$with_gcc_plugin" != no; then
+  AC_CONFIG_HEADERS(gcc-plugin/config.h)
   AC_CONFIG_FILES(gcc-plugin/Makefile)
 fi
 
-if test "$with_llvm_plugin" != no; then
-  AC_PATH_PROG(LLVM_CONFIG, llvm-config)
-  if test -z "$ac_cv_path_LLVM_CONFIG"; then
-    AC_MSG_ERROR([Could not find llvm-config])
-  fi
-  AC_CHECK_HEADER([llvm/Pass.h],
-                  [], [AC_MSG_ERROR([Cannot find LLVM development headers])])
-  AC_CONFIG_FILES(llvm-plugin/Makefile)
-fi
+AM_CONDITIONAL([COND_GCC_PLUGIN], [test "$with_gcc_plugin" != no])
 
-AC_CONFIG_FILES([annocheck/libannocheck.pc])
+#-------------------------------------------------------------------
 
 AC_OUTPUT

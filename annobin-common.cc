@@ -16,6 +16,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Check the environment for a variable called ANNOBIN.
+   If found, parse its contents as if it contained comma
+   separated arguments, passing each in turn to the
+   provided PARSE_ARGUMENT parameter.  DATA is not examined
+   by this function, just passed to PARSE_ARGUMENT.  */
+
 bool
 annobin_parse_env (arg_parser parse_argument, void * data)
 {
@@ -24,36 +30,32 @@ annobin_parse_env (arg_parser parse_argument, void * data)
   if ((env = getenv ("ANNOBIN")) == NULL)
     return true;
 
-  static char arg[2048];  // It is slightly safer to use a static buffer.
   bool ret = true;
 
   while (*env != 0)
     {
       const char * comma;
-      size_t len;
+      char * arg;
 
+      /* Look for the next argument and copy
+	 it into an independent buffer.  */
       comma = strchr (env, ',');
       if (comma)
 	{
-	  len = comma - env;
-	  if (len >= sizeof arg)
-	    // FIXME: Issue an error message somehow ?
-	    // FIXME: Or use a dynamically growing buffer.
-	    return false;
-
-	  strncpy (arg, env, len);
-	  arg[len] = 0;
+	  arg = strndup (env, comma - env);
 	  env = comma + 1;
         }
       else
 	{
-	  len = sizeof arg - 1;
-	  // FIXME: Check strlen (env) against len ?
-	  strncpy (arg, env, len);
-	  arg[len] = 0;
+	  arg = strdup (env);
 	  env += strlen (env);
 	}
 
+      if (arg == NULL)
+	return false;
+
+      /* If the argument contains a equals sign,
+	 separate it into a command and value pair.  */
       char * value = strchr (arg, '=');
       if (value)
 	{
@@ -62,10 +64,14 @@ annobin_parse_env (arg_parser parse_argument, void * data)
 	}
       else
 	{
+	  /* Otherwise pass an empty string as the value.  */
 	  value = (char *) "";
 	}
 
+      /* Let the caller process this argument.  */
       ret &= parse_argument (arg, value, data);
+
+      free ((void *) arg);
     }
 
   return ret;

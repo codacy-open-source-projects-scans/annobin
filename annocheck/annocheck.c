@@ -30,9 +30,11 @@
 /* Prefix used to isolate annobin symbols from program symbols.  */
 #define ANNOBIN_SYMBOL_PREFIX ".annobin_"
 
+#define ANNOCHECK_TMP_DATA_DIR       "annocheck.data."
 #define ANNOCHECK_TMP_DEBUGINFO_DIR  "annocheck.debuginfo."
 #define ANNOCHECK_TMP_RPM_DIR        "annocheck.rpm."
-#define ANNOCHECK_TMP_DATA_DIR       "annocheck.data."
+#define ANNOCHECK_TMP_TAR_DIR        "annocheck.tar."
+#define ANNOCHECK_TMP_ZIP_DIR        "annocheck.zip."
 
 /* -1: silent, 0: normal, 1: verbose, 2: very verbose.  */
 ulong verbosity = 0;
@@ -314,7 +316,7 @@ afinfo (einfo_type type, const char * filename, const char * format, ...)
    PTR is passed to FUNC along with a pointer to the note.
    If FUNC returns false the walk is terminated.
    Returns FALSE if the walk could not be executed at all, otherwise returns TRUE.
-   
+
    A FALSE return from FUNC does not mean that the execution has failed,
    hence there is no way to know if a TRUE result from this function is
    because the walk covered every note, or because a handler did not like
@@ -480,19 +482,19 @@ run_checkers (const char * filename, int fd, Elf * elf)
 
   if (first_seg_checker != NULL)
     {
-      size_t phnum, cnt;
+      size_t phnum, seg_num;
 
       elf_getphdrnum (elf, & phnum);
 
-      for (cnt = 0; cnt < phnum; ++cnt)
+      for (seg_num = 0; seg_num < phnum; ++seg_num)
 	{
 	  GElf_Phdr          mem;
 	  annocheck_segment  seg;
 
 	  memset (& seg, 0, sizeof seg);
 
-	  seg.phdr = gelf_getphdr (elf, cnt, & mem);
-	  seg.number = cnt;
+	  seg.phdr = gelf_getphdr (elf, seg_num, & mem);
+	  seg.number = seg_num;
 
 	  if (seg.phdr == NULL)
 	    /* Fuzzzing can produce segments like this.  */
@@ -511,6 +513,8 @@ run_checkers (const char * filename, int fd, Elf * elf)
 		  if (seg.data == NULL)
 		    seg.data = elf_getdata_rawchunk (elf, seg.phdr->p_offset,
 						     seg.phdr->p_filesz, ELF_T_BYTE);
+		  if (seg.data == NULL)
+		    ret = afinfo (ERROR, filename, "Failed to read in segement %ld", (long) seg_num);
 
 		  assert (tool->check_seg != NULL);
 		  ret &= tool->check_seg (& data, & seg);
@@ -547,6 +551,66 @@ run_checkers (const char * filename, int fd, Elf * elf)
   return ret;
 }
 
+/* Reject any path that contains characters that could compromise the system() function call.
+   Since filenames are enclosed in double quotes, any path containing a double quote is
+   suspicious.
+   Since filenames are used as part of a multi-command system() function call shell meta
+   characters (eg the semi-colon or the backtick) are also suspicious.
+   Since regexp characters like * and ? could cause pathname expansion which then matches
+   filenames that contain bad characters, they are also excluded.
+   Additionally any non-printing characters are also a cause for concern.  */
+
+static bool
+is_safe_path (const char * path)
+{
+  if (path == NULL || *path == 0)
+    return true;
+
+  /* Certain characters are dangerous if they start a path,
+     but not if they occur partway through a path.  */
+  if (*path == '~' || *path == '-')
+    {
+      einfo (VERBOSE, "path starts with ~ or - character: %s", path);
+      return false;
+    }
+
+  /* We treat the [ character specially because /usr/bin/[ is a
+     valid path to a valid command.  So only treat [ as suspicious
+     if there is also a ] character in the path.  */
+  if (strchr (path, '[') != NULL && strchr (path, ']') != NULL)
+    {
+      einfo (VERBOSE, "suspicious character [ found in path: %s", path);
+      return false;
+    }
+
+  /* FIXME: Should the colon character : also be in this list ?  */
+  const char bad_chars[] = "\";&|`$'()\\{}<>\n*?]";
+  
+  while (*path != 0)
+    {
+      if (! isprint (*path))
+	{
+	  einfo (VERBOSE, "non-printing character %d found in path: %s",
+		 *path, path);
+	  return false;
+	}
+
+      if (strchr (bad_chars, *path) != NULL)
+	{
+	  einfo (VERBOSE, "suspicious character %d (%c) found in path: %s",
+		 *path, *path, path);
+	  return false;
+	}
+
+      path ++;
+    }
+
+  /* FIXME: A filename that contains only isspace() characters
+     is suspicious, but we do not test for that here.  */
+
+  return true;
+}
+
 #ifndef LIBANNOCHECK
 static const char *
 itoa (uint lev)
@@ -561,145 +625,48 @@ itoa (uint lev)
     }
 }
 
-/* Reject any path that contains characters that could compromise the system() function call.  */
-
-static bool
-is_safe_path (const char * path)
-{
-  if (path == NULL)
-    return true;
-
-  return strchr (path, '"') == NULL;
-}
-
-static bool
-process_rpm_file (const char * filename)
-{
-  /* It turns out that the simplest/most portable way to handle an rpm is
-     to use the rpm2cpio and cpio programs to unpack it for us...  */
-  char dirname[32];
-
-  strcpy (dirname, ANNOCHECK_TMP_RPM_DIR "XXXXXX");
-  if (mkdtemp (dirname) == NULL)
-    return afinfo (WARN, filename, "Failed to create temporary directory for processing rpm");
-
-  afinfo (VERBOSE2, dirname, "Created temporary directory for rpm processing");
-
-  char * fname;
-  char * pname;
-  char * command;
-  char * cwd = getcwd (NULL, 0);
-
-  if (filename[0] != '/')
-    fname = concat (cwd, "/", filename, NULL);
-  else
-    fname = concat (filename, NULL);
-
-  if (full_progname == NULL || * full_progname == 0)
-    pname = concat (cwd, "/", "libannocheck", NULL);
-  else if (full_progname[0] != '/' && strchr (full_progname, '/'))
-    pname = concat (cwd, "/", full_progname, NULL);
-  else
-    pname = concat (full_progname, NULL);
-
-  /* Paranoia: Check that the pathnames we are about to supply to system()
-     do not contain characters that would break out of the shell and allow
-     arbitrary commands to be run.  */
-  if (! is_safe_path (dirname)
-      || ! is_safe_path (fname)
-      || ! is_safe_path (pname)
-      || ! is_safe_path (filename)
-      || ! is_safe_path (tmpdir)
-      || ! is_safe_path (saved_args))
-    return afinfo (WARN, filename, "Suspicious character(s) in paths");
-
-  command = concat (/* Change into the temporary directory.  */
-		    "cd ", dirname,
-		    /* Convert the rpm to cpio format.  */
-		    " && rpm2cpio \"", fname, "\"",
-		    /* Pipe the output into cpio in order to extract the files.  */
-		    " | cpio -dium --quiet",
-		    /* Run annocheck on the files in the directory, skipping unknown file types,
-		       and prefixing the output with the rpm name.  */
-		    " && ", pname,
-		    ignore_unknown == do_not_ignore ? "--report-unknown" : " --ignore-unknown ",
-		    ignore_links == do_not_ignore ? "--follow-links" : " --ignore-links ",
-		    "--prefix \"", lbasename (filename), "\"",
-		    /* Increment the recursion level.  */
-		    " --level ", itoa (level + 1),
-#if HAVE_LIBDEBUGINFOD && !defined LIBANNOCHECK
-		    use_debuginfod ? "" : " --no-use-debuginfod",
-#endif
-		    /* Pass on the name of the temporary data directory, if created.  */
-		    tmpdir == NULL ? "" : " --tmpdir ",
-		    tmpdir == NULL ? "" : tmpdir,
-		    /* Then all the other options that the user has supplied.  */
-		    " ", saved_args ? saved_args : "",
-		    " .",
-		    NULL);
-
-  afinfo (VERBOSE2, NULL, "Running rpm extractor command sequence: %s", command);
-  fflush (stdin);
-
-  int result = system (command);
-  if (result == -1 || result == 127)
-    {
-      free (command);
-      free (cwd);
-      free (fname);
-      free (pname);
-
-      return afinfo (WARN, filename, "Failed to process rpm file");
-    }
-
-  free (command);
-  free (cwd);
-  free (fname);
-  free (pname);
-
-  /* Make sre that we have write permission on all of the files and directories.  */
-  command = concat ("chmod -R u+w ", dirname, NULL);
-  if (system (command))
-    afinfo (WARN, dirname, "Failed to give write permission to the directory and its contents");
-  /* Delete the temporary directory.  */
-  free (command);
-
-  /* Delete the temporary directory and its contents.  */
-  command = concat ("rm -fr ", dirname, NULL);
-  if (system (command))
-    afinfo (WARN, dirname, "Failed to delete this temporary directory");
-  free (command);
-
-  afinfo (VERBOSE2, filename, "RPM processed successfully");
-  return result == EXIT_SUCCESS;
-}
-
 static bool
 extract_rpm_into_dir (const char * rpm, const char * dirname)
 {
-  char * fname;
-  char * cwd = getcwd (NULL, 0);
+  /* These should never trigger, but better safe than sorry.  */
+  if (! is_safe_path (dirname))
+    return afinfo (WARN, dirname, "Suspicious characeter(s) in directory path");
+  if (! is_safe_path (rpm))
+    return afinfo (WARN, rpm, "Suspicious characeter(s) in rpm name");
 
-  /* If filename is a relative path, convert it to an absolute one
-     so that it can be found once we change into the temporary directory.  */
+  /* If filename is a relative path, convert it to an absolute one so
+     that it can be found once we change into the temporary directory.  */
+
+  char * fname;
+
   if (rpm[0] != '/')
-    fname = concat (cwd, "/", rpm, NULL);
+    {
+      char * cwd = getcwd (NULL, 0);
+      if (cwd == NULL)
+	return einfo (SYS_ERROR, "Unable to retrieve the current working directory");
+
+      fname = concat (cwd, "/", rpm, NULL);
+      free (cwd);
+    }
   else
     /* This is just so that we can safely call free(fname) at the end.  */
     fname = concat (rpm, NULL);
 
-  if (access (rpm, F_OK) == -1)
+  /* This should never happen, but better safe than sorry.  */
+  if (! is_safe_path (fname))
     {
-      afinfo (SYS_ERROR, fname, "Error reading rpm file");
-      free (cwd);
+      afinfo (WARN, fname, "Suspicious characeter(s) in computed file name path");
       free (fname);
       return false;
     }
 
-  /* This should never happen, but better safe than sorry.  */
-  if (! is_safe_path (dirname) || ! is_safe_path (fname))
-    return afinfo (WARN, NULL, "Suspicious characeter(s) in paths");
-
+  if (access (fname, F_OK) == -1)
+    {
+      afinfo (SYS_ERROR, fname, "Unable to access rpm file");
+      free (fname);
+      return false;
+    }
+  
   char * command;
   command = concat (/* Change into the temporary directory.  */
 		    "cd ", dirname,
@@ -711,22 +678,18 @@ extract_rpm_into_dir (const char * rpm, const char * dirname)
 		    " && cd ..",
 		    NULL);
 
+  free (fname);
+  
   afinfo (VERBOSE2, NULL, "Running rpm extractor command sequence: %s", command);
   fflush (stdin);
 
   if (system (command))
     {
-      afinfo (WARN, rpm, "Failed to extract rpm file");
       free (command);
-      free (cwd);
-      free (fname);
-      return false;
+      return afinfo (WARN, rpm, "Failed to extract rpm file");
     }
 
   free (command);
-  free (cwd);
-  free (fname);
-
   return afinfo (VERBOSE2, rpm, "extracted into %s", dirname);
 }
 
@@ -760,7 +723,7 @@ extract_debug_rpm_files (void)
 
       if (asprintf (& tmp_debug_dir, ANNOCHECK_TMP_DEBUGINFO_DIR "XXXXXX") == -1)
 	{
-	  afinfo (ERROR, tmp_debug_dir, "Failed to allocate temporary directory name for debuginfo extraction");
+	  afinfo (ERROR, NULL, "Failed to allocate temporary directory name for debuginfo extraction");
 	  return NULL;
 	}
 
@@ -776,10 +739,18 @@ extract_debug_rpm_files (void)
       using_tmpdir = true;
 
       char * cwd = getcwd (NULL, 0);
-      const char * tmp = concat ("--debug-dir=", cwd, "/", tmp_debug_dir, NULL);
+      if (cwd == NULL)
+	{
+	  einfo (SYS_ERROR, "Unable to retrieve the current working directory");
+	  free ((void *) tmp_debug_dir);
+	  return NULL;
+	}
+
+#define DEBUG_DIR_OPTION "--debug-dir="
+      const char * tmp = concat (DEBUG_DIR_OPTION, cwd, "/", tmp_debug_dir, NULL);
 
       /* This should never happen, but let's be paranoid.  */
-      if (! is_safe_path (tmp))
+      if (! is_safe_path (tmp + strlen (DEBUG_DIR_OPTION)))
 	{
 	  afinfo (ERROR, tmp, "Path to temporary debug dir contains suspicious characters");
 	  free ((void *) tmp_debug_dir);
@@ -1041,6 +1012,14 @@ annocheck_open_separate_debuginfo_file (annocheck_data * data, char ** filename_
   else
     canon_dir[canon_dirlen] = '\0';
 
+#ifndef LIBANNOCHECK
+  /* If we have been pointed at some debuginfo rpms then extract them now into a temporary directory.  */
+  const char * debug_rpms_dir = NULL;
+
+  if (debug_rpm_list != NULL)
+    debug_rpms_dir = extract_debug_rpm_files ();
+#endif
+  
 #define DEBUGDIR_1 "/lib/debug"
 #define DEBUGDIR_2 "/usr/lib/debug"
 #define DEBUGDIR_3 "/usr/lib/debug/usr"
@@ -1058,6 +1037,9 @@ annocheck_open_separate_debuginfo_file (annocheck_data * data, char ** filename_
 				+ strlen (DEBUGDIR_6)
 				+ strlen (DEBUGDIR_7)
 				+ (debug_dir ? strlen (debug_dir) : 1)
+#ifndef LIBANNOCHECK
+				+ (debug_rpms_dir ? strlen (debug_rpms_dir) : 1)
+#endif
 				+ canon_dirlen
 				+ strlen (".debug/")
 				+ strlen (link)
@@ -1071,34 +1053,29 @@ annocheck_open_separate_debuginfo_file (annocheck_data * data, char ** filename_
       TRY_DEBUG ("%s/%s", debug_dir, link);
 
       /* Then try the usual sub-directories of that directory.  */
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_1[1], link);
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_2[1], link);
+      TRY_DEBUG ("%s/%s/%s",  debug_dir, & DEBUGDIR_1[1], link);
+      TRY_DEBUG ("%s/%s/%s",  debug_dir, & DEBUGDIR_2[1], link);
       TRY_DEBUG ("%s/%s%s%s", debug_dir, & DEBUGDIR_2[1], canon_dir, link);
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_3[1], link);
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_4[1], link);
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_5[1], link);
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_6[1], link);
-      TRY_DEBUG ("%s/%s/%s", debug_dir,  & DEBUGDIR_7[1], link);
+      TRY_DEBUG ("%s/%s/%s",  debug_dir, & DEBUGDIR_3[1], link);
+      TRY_DEBUG ("%s/%s/%s",  debug_dir, & DEBUGDIR_4[1], link);
+      TRY_DEBUG ("%s/%s/%s",  debug_dir, & DEBUGDIR_5[1], link);
+      TRY_DEBUG ("%s/%s/%s",  debug_dir, & DEBUGDIR_6[1], link);
+      TRY_DEBUG ("%s/%s/%s",  debug_dir, & DEBUGDIR_7[1], link);
 
       adinfo (VERBOSE2, data, "Could not find the file in the debug directory");
     }
 
 #ifndef LIBANNOCHECK
-  /* If we have been pointed at a debuginfo rpm then try that next.  */
-  if (debug_rpm_list != NULL)
+  if (debug_rpms_dir != NULL)
     {
-      const char * dir = extract_debug_rpm_files ();
-      if (dir != NULL)
-	{
-	  TRY_DEBUG ("./%s/%s", dir, link);
-	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_1, link);
-	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_2, link);
-	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_3, link);
-	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_4, link);
-	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_5, link);
-	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_6, link);
-	  TRY_DEBUG ("./%s%s/%s", dir, DEBUGDIR_7, link);
-	}
+      TRY_DEBUG ("./%s/%s", debug_rpms_dir, link);
+      TRY_DEBUG ("./%s%s/%s", debug_rpms_dir, DEBUGDIR_1, link);
+      TRY_DEBUG ("./%s%s/%s", debug_rpms_dir, DEBUGDIR_2, link);
+      TRY_DEBUG ("./%s%s/%s", debug_rpms_dir, DEBUGDIR_3, link);
+      TRY_DEBUG ("./%s%s/%s", debug_rpms_dir, DEBUGDIR_4, link);
+      TRY_DEBUG ("./%s%s/%s", debug_rpms_dir, DEBUGDIR_5, link);
+      TRY_DEBUG ("./%s%s/%s", debug_rpms_dir, DEBUGDIR_6, link);
+      TRY_DEBUG ("./%s%s/%s", debug_rpms_dir, DEBUGDIR_7, link);
     }
 #endif
 
@@ -1540,6 +1517,9 @@ annocheck_find_symbol_by_name (annocheck_data * data, const char * name,
 	{
 	  const char * symname = elf_strptr (data->elf, sym_shdr.sh_link, sym.st_name);
 
+	  if (symname == NULL)
+	    continue;
+
 	  if (streq (name, symname))
 	    {
 	      if (value_return != NULL)
@@ -1921,6 +1901,12 @@ process_ar (const char * filename, int fd, Elf * elf)
     {
       /* Get the header for this element.  */
       Elf_Arhdr * arhdr = elf_getarhdr (subelf);
+      if (arhdr == NULL)
+	{
+	  elf_end (subelf);
+	  afinfo (WARN, filename, "unable to read archive header");
+	  return false;
+	}
       const char * fname = concat (filename, ":", arhdr->ar_name, NULL);
 
       /* Skip over the index entries.  */
@@ -1944,64 +1930,192 @@ process_ar (const char * filename, int fd, Elf * elf)
   return ret;
 }
 
+#ifndef LIBANNOCHECK
+
+/* Unpack the contents of FILENAME into a temporary directory, prefixed with TMP_DIR.
+   Use EXTRACTION_TOOL1 and EXTRACTION_TOOL2 as the commands to unpack the files.
+   Run annocheck over the contents of this directory.
+   Delete the directory afterwards.
+   Returns true if the entire process succeeded, including the annocheck scans.
+   Returns false otherwise.  */
+
 static bool
-process_elf (const char * filename, int fd, Elf * elf)
+unpack_and_process (const char * filename,
+		    const char * tmp_dir,
+		    const char * extraction_tool1,
+		    const char * extraction_tool2)
 {
-  switch (elf_kind (elf))
+  char * dirname = NULL;
+
+  /* Paranoia.  */
+  if (filename == NULL || filename[0] == 0
+      || tmp_dir == NULL || tmp_dir[0] == 0
+      || extraction_tool1 == NULL || extraction_tool1[0] == 0)
+    /* It is OK for extraction_tool2 to be NULL.  */
+    return afinfo (WARN, filename, "unpack_and_process called with invalid arguments");
+
+  if (asprintf (& dirname, "%s%s", tmp_dir, "XXXXXX") < 8)
     {
-    case ELF_K_AR:  return process_ar (filename, fd, elf);
-    case ELF_K_ELF: return run_checkers (filename, fd, elf);
-    default:        break;
+      free (dirname);
+      return afinfo (WARN, filename, "unable to allocate temporary directory name");
     }
 
-  /* Try reading the file's magic number.  */
-  unsigned   char buf[4];
-
-  lseek (fd, 0, SEEK_SET);
-  /* Check for known magic values.  */
-  if (read (fd, buf, 4) == 4)
+  if (mkdtemp (dirname) == NULL)
     {
-      const unsigned char llvm_magic[4] = { 0x42, 0x43, 0xc0, 0xde };
-      const unsigned char rpm_magic[4]  = { 0xED, 0xAB, 0xEE, 0xDB };
-
-      if (memcmp (buf, llvm_magic, sizeof llvm_magic) == 0)
-	{
-	  if (ignore_unknown == do_ignore)
-	    return true;
-	  return afinfo (WARN, filename, "is an LLVM bitcode file - should it be here ?");
-	}
-
-      /* FIXME: Check for ELF magic header here ?  */
-
-      if (memcmp (buf, rpm_magic, sizeof rpm_magic) != 0)
-	{
-	  if (ignore_unknown == do_ignore)
-	    return true;
-	  return afinfo (WARN, filename, "is not an ELF or RPM file");
-	}
+      afinfo (WARN, dirname, "this is the temp dir name");
+      free (dirname);
+      return afinfo (WARN, filename, "Failed to create temporary directory");
     }
+
+  afinfo (VERBOSE2, dirname, "Created temporary directory");
+
+  char * fname;
+  char * pname;
+  char * command;
+  char * cwd = getcwd (NULL, 0);
+  if (cwd == NULL)
+    {
+      free (dirname);
+      return afinfo (SYS_ERROR, NULL, "Unable to retrieve the current working directory");
+    }
+
+  /* If necessary convert FILENAME into an absolute path.  */
+  if (filename[0] != '/')
+    fname = concat (cwd, "/", filename, NULL);
   else
-    {
-      if (ignore_unknown == do_ignore)
-	return true;
+    fname = concat (filename, NULL);
 
-      return afinfo (WARN, filename, "unable to read magic number");
+  /* Get the name of the annocheck program to run.  */
+  if (full_progname == NULL || * full_progname == 0)
+    pname = concat (cwd, "/", "libannocheck", NULL);
+  else if (full_progname[0] != '/' && strchr (full_progname, '/'))
+    pname = concat (cwd, "/", full_progname, NULL);
+  else
+    pname = concat (full_progname, NULL);
+
+  bool stop = false;
+  /* Paranoia: Check that the pathnames we are about to supply to system()
+     do not contain characters that would break out of the shell and allow
+     arbitrary commands to be run.  */
+  if (! is_safe_path (dirname))
+    {
+      stop = true;
+      afinfo (WARN, dirname, "Suspicious character(s) in directory path");
+    }
+      
+  if (! is_safe_path (fname))
+    {
+      stop = true;
+      afinfo (WARN, fname, "Suspicious character(s) in absolute file path");
+    }
+      
+  if (! is_safe_path (pname))
+    {
+      stop = true;
+      afinfo (WARN, pname, "Suspicious character(s) in program name");
     }
 
-  /* We now know that this is an RPM.  */
-  lseek (fd, 0, SEEK_SET);
+  if (! is_safe_path (filename))
+    {
+      stop = true;
+      afinfo (WARN, filename, "Suspicious character(s) in filename");
+    }
+      
+  if (! is_safe_path (tmpdir))
+    {
+      stop = true;
+      afinfo (WARN, tmpdir, "Suspicious character(s) in temporary directory path");
+    }
 
-#ifdef LIBANNOCHECK
+  if (stop)
+    {
+      free (fname);
+      free (pname);
+      free (dirname);
+      return false;
+    }
 
-  if (ignore_unknown == do_ignore)
-    return true;
+  command = concat (/* Change into the temporary directory.  */
+		    "cd ", dirname,
+		    /* Run the extraction tool.  */
+		    " && ", extraction_tool1,
+		    /* Put the filename in quotes, in case it contains spaces or the like.  */
+		    " \"", fname, "\" ",
+		    /* If a second extraction tool is needed pipe the output from the first tool into the second.  */
+		    extraction_tool2 == NULL ? "" : " | ",
+		    extraction_tool2 == NULL ? "" : extraction_tool2,
+		    /* Run annocheck on the files in the directory.  */
+		    " && ", pname,
+		    /* Skip unknown file types.  */
+		    ignore_unknown == do_not_ignore ? " --report-unknown" : " --ignore-unknown",
+		    ignore_links == do_not_ignore ? " --follow-links" : " --ignore-links",
+		    /* Prefix the output with the filename.  */
+		    " --prefix \"", lbasename (filename), "\"",
+		    /* Increment the recursion level.  */
+		    " --level ", itoa (level + 1),
+#if HAVE_LIBDEBUGINFOD
+		    use_debuginfod ? "" : " --no-use-debuginfod",
+#endif
+		    /* Pass on the name of the temporary data directory, if created.  */
+		    tmpdir == NULL ? "" : " --tmpdir ",
+		    tmpdir == NULL ? "" : tmpdir,
+		    /* Then all the other options that the user has supplied.  */
+		    " ", saved_args ? saved_args : "",
+		    /* Finally tell annocheck to run on the contents of this directory.  */
+		    " .",
+		    NULL);
 
-  return afinfo (WARN, filename, "is an RPM file (these are not handled by libannocheck)");
+  afinfo (VERBOSE2, NULL, "Running rpm extractor command sequence: %s", command);
+  fflush (stdin);
 
-#else
+  int result = system (command);
+  if (result == -1 || result == 127)
+    {
+      free (command);
+      free (cwd);
+      free (fname);
+      free (pname);
+      free (dirname);
 
+      return afinfo (WARN, filename, "Failed to process rpm file");
+    }
+
+  free (command);
+  free (cwd);
+  free (fname);
+  free (pname);
+
+  /* Make sre that we have write permission on all of the files and directories.  */
+  command = concat ("chmod -R u+w ", dirname, NULL);
+  if (system (command))
+    afinfo (WARN, dirname, "Failed to give write permission to the directory and its contents");
+  /* Delete the temporary directory.  */
+  free (command);
+
+  /* Delete the temporary directory and its contents.  */
+  command = concat ("rm -fr ", dirname, NULL);
+  if (system (command))
+    afinfo (WARN, dirname, "Failed to delete this temporary directory");
+  free (command);
+
+  afinfo (VERBOSE2, filename, "RPM processed successfully");
+
+  free (dirname);
+
+  return result == EXIT_SUCCESS;
+}
+
+/* Unpack the contents of rpm FILENAME into a temporary directory.
+   Run annocheck over the contents of this directory.
+   Delete the directory afterwards.
+   Returns true if the entire process succeeded, including the annocheck scans.
+   Returns false otherwise.  */
+
+static bool
+unpack_and_process_rpm (const char * filename)
+{
   /* The rpm library leaks memory like a sieve, so we delay
-     using it until we are really sure that we need it.  */
+     initialising it until we are really sure that we need it.  */
   static bool rpm_inited = false;
 
   if (! rpm_inited)
@@ -2012,9 +2126,101 @@ process_elf (const char * filename, int fd, Elf * elf)
       rpm_inited = true;
     }
 
-  return process_rpm_file (filename);
+  return unpack_and_process (filename, ANNOCHECK_TMP_RPM_DIR, "rpm2cpio", "cpio -dium --quiet");
+}
 
-#endif /* not LIBANNOCHECK */
+/* Unpack the contents of zip file FILENAME into a temporary directory.
+   Run annocheck over the contents of this directory.
+   Delete the directory afterwards.
+   Returns true if the entire process succeeded, including the annocheck scans.
+   Returns false otherwise.  */
+
+static bool
+unpack_and_process_zip_file (const char * filename)
+{
+  return unpack_and_process (filename, ANNOCHECK_TMP_ZIP_DIR, "unzip -q -o", NULL);
+}
+
+/* Unpack the contents of zip file FILENAME into a temporary directory.
+   Run annocheck over the contents of this directory.
+   Delete the directory afterwards.
+   Returns true if the entire process succeeded, including the annocheck scans.
+   Returns false otherwise.  */
+
+static bool
+unpack_and_process_tar_file (const char * filename)
+{
+  return unpack_and_process (filename, ANNOCHECK_TMP_TAR_DIR, "tar xf", NULL);
+}
+
+/* Magic numbers found at the start of certain types of binary files.  */
+static const unsigned char zip_magic[4]  = { 0x50, 0x4B, 0x03, 0x04 };
+static const unsigned char llvm_magic[4] = { 0x42, 0x43, 0xc0, 0xde };
+static const unsigned char rpm_magic[4]  = { 0xED, 0xAB, 0xEE, 0xDB };
+#endif
+
+static bool
+process_elf (const char * filename, int fd, Elf * elf)
+{
+  switch (elf_kind (elf))
+    {
+    case ELF_K_AR:  return process_ar (filename, fd, elf);
+    case ELF_K_ELF: return run_checkers (filename, fd, elf);
+    case ELF_K_COFF: return afinfo (WARN, filename, "is a COFF format file");
+    case ELF_K_NONE:
+    default:
+      break;
+    }
+
+#ifdef LIBANNOCHECK
+
+  if (ignore_unknown == do_ignore)
+    return true;
+
+  return afinfo (WARN, filename, "is not an ELF format file (these are not handled by libannocheck)");
+
+#else
+  
+  /* Try reading the file's magic number.  */
+  unsigned   char buf[4];
+
+  lseek (fd, 0, SEEK_SET);
+  /* Check for known magic values.  */
+  if (read (fd, buf, 4) != 4)
+    {
+      if (ignore_unknown == do_ignore)
+	return true;
+
+      return afinfo (WARN, filename, "unable to read magic number");
+    }
+
+  /* Reset the file pointer.  */ 
+  lseek (fd, 0, SEEK_SET);
+
+  if (memcmp (buf, llvm_magic, sizeof llvm_magic) == 0)
+    {
+      if (ignore_unknown == do_ignore)
+	return true;
+      return afinfo (WARN, filename, "is an LLVM bitcode file - should it be here ?");
+    }
+
+  if (memcmp (buf, zip_magic, sizeof zip_magic) == 0)
+    return unpack_and_process_zip_file (filename);
+
+  if (memcmp (buf, rpm_magic, sizeof rpm_magic) == 0)
+    return unpack_and_process_rpm (filename);
+
+  /* Tarballs do not have single uniform signature.  So instead
+     look at the filename.
+     FIXME: This test does not handle file extensions such as .tgz.  */
+  if (endswith (filename, ".tar") || strstr (filename, ".tar.") != NULL)
+    return unpack_and_process_tar_file (filename);
+  
+  if (ignore_unknown == do_ignore)
+    return true;
+
+  return afinfo (WARN, filename, "is not an ELF file, an RPM or a ZIP archive");
+#endif
 }
 
 bool
@@ -2026,6 +2232,12 @@ annocheck_process_file (const char * filename)
 
   if (filename == NULL || * filename == 0)
     return false;
+
+  if (! is_safe_path (filename))
+    {
+      afinfo (ERROR, filename, "input filename contains suspicious characters");
+      return false;
+    }
 
   /* Fast track ignoring of debuginfo files - unless a single tool has been specifically enabled.
      FIXME: Maybe add other file extensions ?
@@ -2163,7 +2375,10 @@ annocheck_process_extra_file (checker *     check,
 
   bool ret = true;
   if (elf_kind (elf) != ELF_K_ELF)
-    return afinfo (WARN, extra_filename, "is not an ELF executable file");
+    {
+      elf_end (elf);
+      return afinfo (WARN, extra_filename, "is not an ELF executable file");
+    }
 
   annocheck_data data;
 
@@ -2187,7 +2402,10 @@ annocheck_process_extra_file (checker *     check,
   size_t shstrndx;
 
   if (elf_getshdrstrndx (elf, & shstrndx) < 0)
-    return afinfo (WARN, extra_filename, "Unable to locate string section");
+    {
+      elf_end (elf);
+      return afinfo (WARN, extra_filename, "Unable to locate string section");
+    }
 
   Elf_Scn * scn = NULL;
 
@@ -2241,29 +2459,29 @@ annocheck_process_extra_file (checker *     check,
       pop_component ();
     }
 
-  size_t phnum, cnt;
+  size_t phnum, seg_num;
 
   elf_getphdrnum (elf, & phnum);
 
-  for (cnt = 0; cnt < phnum; ++cnt)
+  for (seg_num = 0; seg_num < phnum; ++seg_num)
     {
       GElf_Phdr   mem;
       annocheck_segment seg;
 
       memset (& seg, 0, sizeof seg);
 
-      seg.phdr = gelf_getphdr (elf, cnt, & mem);
+      seg.phdr = gelf_getphdr (elf, seg_num, & mem);
 
       if (seg.phdr == NULL)
 	/* Fuzzing can produce segments like this.  */
 	continue;
 
-      seg.number = cnt;
+      seg.number = seg_num;
 
       if (check->interesting_seg == NULL)
 	continue;
 
-      afinfo (VERBOSE2, extra_filename, "considering segment %lu", (unsigned long) cnt);
+      afinfo (VERBOSE2, extra_filename, "considering segment %lu", (unsigned long) seg_num);
 
       push_component (check);
 
@@ -2278,7 +2496,7 @@ annocheck_process_extra_file (checker *     check,
 	  ret &= check->check_seg (& data, & seg);
 	}
       else
-	einfo (VERBOSE2, "is not interested in segment %lu", (unsigned long) cnt);
+	einfo (VERBOSE2, "is not interested in segment %lu", (unsigned long) seg_num);
 
       pop_component ();
     }
@@ -2443,6 +2661,12 @@ create_tmpdir (void)
     }
 
   const char * cwd = getcwd (NULL, 0);
+  if (cwd == NULL)
+    {
+      afinfo (SYS_ERROR, NULL, "Unable to retrieve the current working directory");
+      return NULL;
+    }
+  
   tmpdir = concat (cwd, "/", tmpdir, NULL);
   free ((void *) cwd);
 
@@ -2455,8 +2679,17 @@ static void
 print_version (int lev)
 {
   if (lev < 1)
-    afinfo (INFO, NULL, "Version %d.%02d", (int) (ANNOBIN_VERSION),
-	   ((int) (ANNOBIN_VERSION * 100)) % 100);
+    {
+      /* The MESON build system sets ANNOBIN_VERSION to a large interger number, eg 1213
+	 whereas the CONFIGURE build system sets it to a small decimal number, eg 12.13.
+	 The casts are necessary in order to prevent complaints about performing integer
+	 arithmetic on decimal numbers.  */
+      if (ANNOBIN_VERSION > 1000)
+	afinfo (INFO, NULL, "Version %d.%02d", ((int) ANNOBIN_VERSION) / 100, ((int) ANNOBIN_VERSION) % 100);
+      else
+	afinfo (INFO, NULL, "Version %d.%02d", (int) (ANNOBIN_VERSION),
+		((int) (ANNOBIN_VERSION * 100)) % 100);
+    }
 
   if (lev == 0)
     return;
@@ -2476,6 +2709,7 @@ usage (void)
 {
   einfo (INFO, "Runs various scans on the given files");
   einfo (INFO, "Useage: %s [options] <file(s)>", component_names[0]);
+  einfo (INFO, " Files can be regular binary files, rpms, zip archives, ar archives, tarballs or directories");
   einfo (INFO, " Options are:");
   einfo (INFO, "   --debug-rpm=<RPM>       [Find separate dwarf debug information in <RPM>].  Can be repeated.");
   einfo (INFO, "   --debug-file=<FILE>     [Find separate dwarf debug information in <FILE>].  Can be repeated.");
@@ -2606,7 +2840,7 @@ process_tool_arg (const char * arg, uint argc, const char ** argv, uint * next)
 
 		      if (dtool->process_arg)
 			{
-			  push_component (tool);
+			  push_component (dtool);
 			  (void) dtool->process_arg ("disable", NULL, 0, NULL);
 			  pop_component ();
 			}
@@ -2682,11 +2916,19 @@ save_file_arg (const char * parameter, file_option updating)
 
       if (parameter[0] == '~' && parameter[1] == '/')
 	{
-	  cwd = concat (getenv ("HOME"), NULL);
+	  const char * home = getenv ("HOME");
+
+	  if (home == NULL)
+	    return afinfo (SYS_WARN, NULL, "HOME environment variable is not set, unable to expand ~ in path");
+	  cwd = concat (home, NULL);
 	  parameter += 2;
 	}
       else
-	cwd = getcwd (NULL, 0);
+	{
+	  cwd = getcwd (NULL, 0);
+	  if (cwd == NULL)
+	    return afinfo (SYS_WARN, NULL, "Unable to retrieve current working directory");
+	}
 
       parameter = concat (cwd, "/", parameter, NULL);
 
@@ -2697,6 +2939,7 @@ save_file_arg (const char * parameter, file_option updating)
 
   if (! is_safe_path (parameter))
     {
+      afinfo (WARN, parameter, "pathame contains suspicious characters");
       free ((void *) parameter);
       return false;
     }
@@ -2841,7 +3084,7 @@ process_command_line (uint argc, const char * argv[])
 	case 'd': /* --debug-rpm, --debug-file, --debug-dir  */
 	  parameter = strchr (arg, '=');
 	  if (parameter == NULL)
-	    parameter = argv[a++];
+	    parameter = a < argc ? argv[a++] : NULL;
 	  else
 	    parameter ++;
 
@@ -2861,6 +3104,12 @@ process_command_line (uint argc, const char * argv[])
 	  if (parameter == NULL || parameter[0] == 0)
 	    goto arg_missing_argument;
 
+	  if (! is_safe_path (parameter))
+	    {
+	      afinfo (ERROR, parameter, "filename contains suspicious characters");
+	      return false;
+	    }
+	  
 	  if (! save_file_arg (parameter, updating))
 	    afinfo (WARN, parameter, "Unable to save in argument list");
 
@@ -2880,7 +3129,7 @@ process_command_line (uint argc, const char * argv[])
 	      save_arg (orig_arg);
 	      parameter = strchr (arg, '=');
 	      if (parameter == NULL)
-		parameter = argv[a++];
+		parameter = a < argc ? argv[a++] : NULL;
 	      else
 		parameter ++;
 
@@ -2908,7 +3157,7 @@ process_command_line (uint argc, const char * argv[])
 	    {
 	      parameter = strchr (arg, '=');
 	      if (parameter == NULL)
-		parameter = argv[a++];
+		parameter = a < argc ? argv[a++] : NULL;
 	      else
 		parameter ++;
 
@@ -2931,7 +3180,7 @@ process_command_line (uint argc, const char * argv[])
 	    {
 	      parameter = strchr (arg, '=');
 	      if (parameter == NULL)
-		parameter = argv[a++];
+		parameter = a < argc ? argv[a++] : NULL;
 	      else
 		parameter ++;
 
@@ -3049,10 +3298,11 @@ process_command_line (uint argc, const char * argv[])
 	  afinfo (VERBOSE2, test, "Possible associated debuginfo rpm");
 
 	  if (is_safe_path (test)
-	      && stat (test, & statbuf) == 0 && S_ISREG (statbuf.st_mode))
+	      && stat (test, & statbuf) == 0
+	      && S_ISREG (statbuf.st_mode))
 	    {
-	      if (save_file_arg (test, Debug_rpm))
-		add_file_to_list (test, & debug_rpm_list);
+	      if (! save_file_arg (test, Debug_rpm))
+		afinfo (WARN, test, "Unable to save in debug rpm list");
 	    }
 
 	  free (test);
@@ -3122,7 +3372,7 @@ main (int argc, const char ** argv)
       debug_dir = extract_debug_rpm_files ();
       annocheck_set_debug_file (NULL);
     }
-  
+
   bool res = process_files ();
 
   for (tool = first_checker; tool != NULL; tool = NEXT_TOOL_CHECKER (tool))

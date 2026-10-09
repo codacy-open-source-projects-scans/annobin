@@ -1,4 +1,4 @@
-/* Checks the builder of the binary file. 
+/* Checks the builder of the binary file.
    Copyright (C) 2018-2026 Red Hat.
 
   This is free software; you can redistribute it and/or modify it
@@ -44,9 +44,21 @@ static bool
 builtby_start (annocheck_data * data)
 {
   if (data->is_32bit)
-    is_obj = elf32_getehdr (data->elf)->e_type == ET_REL;
+    {
+      Elf32_Ehdr * hdr = elf32_getehdr (data->elf);
+
+      if (hdr == NULL)
+	return false;
+      is_obj = hdr->e_type == ET_REL;
+    }
   else
-    is_obj = elf64_getehdr (data->elf)->e_type == ET_REL;
+    {
+      Elf64_Ehdr * hdr = elf64_getehdr (data->elf);
+
+      if (hdr == NULL)
+	return false;
+      is_obj = hdr->e_type == ET_REL;
+    }
 
   return true;
 }
@@ -135,7 +147,7 @@ on_strlist (strlist * list, const char * name, unsigned int namelen)
 	  return true;
 	list = list->next;
       }
-    
+
   return false;
 }
 
@@ -211,10 +223,10 @@ add_tool (const char *   program,
 
       /* We have found a matching program name.  */
       is_new_tool = false;
-      
+
       if (entry->verlen != verlen)
 	continue;
-      
+
       if (strncmp (version, entry->version, verlen) != 0)
 	continue;
 
@@ -343,7 +355,7 @@ parse_tool (const char *   filename,
   einfo (VERBOSE, "UNEXPECTED TOOL STRING: %s (source %s)", tool, source);
 
   * program_return = tool;
-  
+
   const char * space = strchr (tool, ' ');
   if (space)
     {
@@ -366,7 +378,7 @@ typedef struct saved_command_line
 } saved_command_line;
 
 static struct saved_command_line * first_command_line = NULL;
-  
+
 static bool
 add_command_line (const char * command_line)
 {
@@ -396,7 +408,7 @@ tool_found (const char * source, const char * filename, const char * tool)
   unsigned int  verlen = 0;
 
   parse_tool (filename, tool, & program, & proglen, & version, & verlen, source);
-  
+
   if (nottool_list != NULL && on_strlist (nottool_list, program, proglen))
     return;
 
@@ -425,7 +437,6 @@ tool_found (const char * source, const char * filename, const char * tool)
   einfo (PARTIAL, "%s: %s was built by ", builtby_name, filename);
 
   if (program == NULL || proglen == 0)
-    /* FIXME: This should not happen.  */
     einfo (PARTIAL, "<unknown> ");
   else
     einfo (PARTIAL, "%.*s ", proglen, program);
@@ -441,7 +452,7 @@ tool_found (const char * source, const char * filename, const char * tool)
     }
 
   if (all || BE_VERBOSE)
-    einfo (PARTIAL, "[source: %s]", source);
+    einfo (PARTIAL, "[source: %s] ", source);
 
   if (options_info)
     {
@@ -453,12 +464,11 @@ tool_found (const char * source, const char * filename, const char * tool)
 	commands = program + proglen + 1;
 
       if (commands >= tool + strlen (tool))
-	/* FIXME: Should not happen.  */
-	;
+	einfo (PARTIAL, "<no command line options found>");
       else
 	{
 	  is_new = add_command_line (commands);
-	  
+
 	  if (is_new || all)
 	    einfo (PARTIAL, "[command line: %s]", commands);
 	}
@@ -482,7 +492,7 @@ builtby_note_walker (annocheck_data *     data ATTRIBUTE_UNUSED,
     return false;
 
   const char * namedata = sec->data->d_buf + name_offset;
-  
+
   uint pos = (namedata[0] == 'G' ? 3 : 1);
 
   /* Look for: GA$<tool>gcc 7.0.0 20161212.  */
@@ -493,7 +503,7 @@ builtby_note_walker (annocheck_data *     data ATTRIBUTE_UNUSED,
     return false;
 
   namedata += pos + 1;
-  
+
   /* Some <tool> names are not actually builder names.  */
   static const struct skip {
     const char * str;
@@ -505,12 +515,11 @@ builtby_note_walker (annocheck_data *     data ATTRIBUTE_UNUSED,
   };
 
   int i;
-  for (i = ARRAY_SIZE (skippers); --i;)
+  for (i = ARRAY_SIZE (skippers); i--;)
     if (strncmp (namedata, skippers[i].str, skippers[i].len) == 0)
-      break;
+      return true;
 
-  if (i == 0)
-    tool_found ("annobin note", (const char *) ptr, namedata);
+  tool_found ("annobin note", (const char *) ptr, namedata);
 
   return true;
 }
@@ -536,7 +545,7 @@ builtby_check_rodata (annocheck_data *     data,
 
   if (! found_go)
     return true;
-  
+
   const char * go_version = memmem (sec->data->d_buf, sec->data->d_size, go_lead_in, strlen (go_lead_in));
 
   if (go_version != NULL)
@@ -553,7 +562,7 @@ builtby_check_rodata (annocheck_data *     data,
 	  if (revision != (unsigned int) -1)
 	    sprintf (buf, "Go %u.%u;", version, revision);
 	  else
-	    sprintf (buf, "Go %u;", version); 
+	    sprintf (buf, "Go %u;", version);
 	  tool_found (".rodata section", data->filename, buf);
 	}
     }
@@ -684,7 +693,7 @@ parse_dw_at_language (annocheck_data * data, Dwarf_Attribute * attr)
       /* Some of the GO runtime uses this value,  */
       lang_found (data->filename, "Assembler", NULL, source_dw_at_language);
       break;
-      
+
     default:
       einfo (WARN, "%s: unrecognised value for DW_AT_language attribute: %#lx",
 	     data->filename, (long) val);
@@ -735,7 +744,7 @@ builtby_dwarf_walker (annocheck_data * data, Dwarf * dwarf ATTRIBUTE_UNUSED, Dwa
 
   if (dwarf_attr (die, DW_AT_producer, & attr) != NULL)
     parse_dw_at_producer (data, & attr);
-  
+
   return true;
 }
 
@@ -751,7 +760,7 @@ builtby_finish (annocheck_data * data)
     einfo (VERBOSE, "%s: ignoring unrelocated DWARF debug info", data->filename);
   else
     (void) annocheck_walk_dwarf (data, builtby_dwarf_walker, NULL);
-    
+
   if (first_entry == NULL)
     {
       if (istool_list)
@@ -763,8 +772,6 @@ builtby_finish (annocheck_data * data)
     }
   else
     {
-      /* FIXME: Free is/not tool/lang lists.  */
-
       struct entry * entry;
       struct entry * next = NULL;
 
@@ -803,22 +810,44 @@ builtby_finish (annocheck_data * data)
 }
 
 static void
-add_to_strlist (strlist ** list, const char * name)
+free_strlist (strlist ** list)
 {
-  strlist * new_entry = xmalloc (sizeof * new_entry);
-  new_entry->name = xstrdup (name);
-  new_entry->next = * list;
-  * list = new_entry;
+  strlist * entry = * list;
+
+  while (entry != NULL)
+    {
+      strlist * next = entry->next;
+      free ((void *) entry->name);
+      free (entry);
+      entry = next;
+    }
+
+  * list = NULL;
 }
 
 static bool
-builtby_process_arg (const char * arg, const char ** argv, const uint argc ATTRIBUTE_UNUSED, uint * next)
+add_to_strlist (strlist ** list, const char * name)
+{
+  if (name == NULL || list == NULL)
+    return false;
+
+  strlist * new_entry = xmalloc (sizeof * new_entry);
+
+  new_entry->name = xstrdup (name);
+  new_entry->next = * list;
+  * list = new_entry;
+
+  return true;
+}
+
+static bool
+builtby_process_arg (const char * arg, const char ** argv, const uint argc, uint * next)
 {
   if (arg[0] == '-')
     ++ arg;
   if (arg[0] == '-')
     ++ arg;
-  
+
   if (streq (arg, "enable-builtby") || streq (arg, "enable-built-by") || streq (arg, "enable"))
     {
       disabled = false;
@@ -882,7 +911,7 @@ builtby_process_arg (const char * arg, const char ** argv, const uint argc ATTRI
     }
 
   const char * parameter = strchr (arg, '=');
-  uint         new_next  = 0; 
+  uint         new_next  = 0;
 
   if (next != NULL)
     new_next = * next;
@@ -891,36 +920,43 @@ builtby_process_arg (const char * arg, const char ** argv, const uint argc ATTRI
     {
       parameter += 1;
     }
-  else if (argv == NULL || next == NULL)
+  else if (argv == NULL || next == NULL || * next >= argc)
     {
-      /* FIXME: This should not happen.  */
-      parameter = "<error>";
+      parameter = NULL;
     }
   else
     {
       parameter = argv[* next];
       new_next++;
     }
-  
+
+  bool res = false;
+
   if (const_strneq (arg, "tool="))
     {
-      add_to_strlist (& istool_list, parameter);
+      res = add_to_strlist (& istool_list, parameter);
     }
   else if (const_strneq (arg, "nottool="))
     {
-      add_to_strlist (& nottool_list, parameter);
+      res = add_to_strlist (& nottool_list, parameter);
     }
   else if (const_strneq (arg, "lang="))
     {
-      add_to_strlist (& islang_list, parameter);
+      res = add_to_strlist (& islang_list, parameter);
     }
   else if (const_strneq (arg, "notlang="))
     {
-      add_to_strlist (& notlang_list, parameter);
+      res = add_to_strlist (& notlang_list, parameter);
     }
   else
     return false;
 
+  if (res == false)
+    {
+      einfo (VERBOSE, "%s: option '%s' requires a value but no argument list is available", builtby_name, arg);
+      return false;
+    }
+  
   if (next)
     * next = new_next;
   return true;
@@ -936,11 +972,11 @@ builtby_usage (void)
   einfo (INFO, "    --[no-]version-info  Do [not] report version info for the builders");
   einfo (INFO, "    --[no-]lang-info     Do [not] report discovered languges");
   einfo (INFO, "    --[no-]tool-info     Do [not] report discovered builders");
-  einfo (INFO, "    --[no-]options-info  Do [not] report discovered command lines");  
+  einfo (INFO, "    --[no-]options-info  Do [not] report discovered command lines");
   einfo (INFO, "    --tool=<NAME>        Only report binaries built by <NAME> (cumulative)");
   einfo (INFO, "    --nottool=<NAME>     Skip binaries built by <NAME> (cumulative)");
   einfo (INFO, "    --lang=<NAME>        Only report binaries written in <NAME> (cumulative)");
-  einfo (INFO, "    --notlang=<NAME>     Skip binaries written in <NAME> (cumulative)");  
+  einfo (INFO, "    --notlang=<NAME>     Skip binaries written in <NAME> (cumulative)");
 }
 
 static void
@@ -950,7 +986,7 @@ builtby_version (int level)
     einfo (INFO, "Version 1.3");
 }
 
-struct checker builtby_checker = 
+struct checker builtby_checker =
 {
   builtby_name,
   builtby_altname,
@@ -969,7 +1005,7 @@ struct checker builtby_checker =
 };
 
 static __attribute__((constructor)) void
-builtby_register_checker (void) 
+builtby_register_checker (void)
 {
   if (! annocheck_add_checker (& builtby_checker, (int) ANNOBIN_VERSION))
     disabled = true;
@@ -979,4 +1015,9 @@ static __attribute__((destructor)) void
 builtby_deregister_checker (void)
 {
   annocheck_remove_checker (& builtby_checker);
+
+  free_strlist (& istool_list);
+  free_strlist (& nottool_list);
+  free_strlist (& islang_list);
+  free_strlist (& notlang_list);
 }

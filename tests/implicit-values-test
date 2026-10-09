@@ -12,9 +12,6 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
-set +x
-echo START
-
 TEST_NAME=implicit-values
 . $srcdir/common.sh
 
@@ -43,13 +40,14 @@ OPTS+=" -std=gnu89"
 start_test
 
 COMMAND="$GCC $OPTS -c -Wno-implicit-int $srcdir/implicit.c -o implicit-int-test.exe"
-$COMMAND
+$COMMAND 2>gcc.out
 if [ $? != 0 ];
 then
-    echo " $TEST_NAME: FAIL: unable to compile test file"
+    echo " $TEST_NAME: SKIP: unable to compile test file"
     echo " $TEST_NAME: command: $COMMAND"
+    cat gcc.out
     end_test
-    exit 1
+    exit $EXIT_TEST_SKIPPED
 fi
 
 # Run annocheck
@@ -57,7 +55,7 @@ fi
 SKIPS="--skip-all --test-implicit-values --suppress-version-warnings"
 A_COMMAND="$ANNOCHECK implicit-int-test.exe $SKIPS"
 $A_COMMAND > implicit-int-test.out
-grep -e "Overall: FAIL" implicit-int-test.out
+grep -q -e"Overall: FAIL" implicit-int-test.out
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: FAIL: compiling with -Wno-implicit-int still produces an executable that passes annocheck"
@@ -67,19 +65,20 @@ then
     $A_COMMAND --verbose
     uuencode implicit-int-test.exe implicit-int-test.exe
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
 # First test passed.  Now run second test.
 
 COMMAND="$GCC $OPTS -c -Wno-implicit-function-declaration $srcdir/implicit.c -o implicit-func-test.exe"
-$COMMAND
+$COMMAND 2>gcc.out
 if [ $? != 0 ];
 then
-    echo " $TEST_NAME: FAIL: unable to compile test file"
+    echo " $TEST_NAME: SKIP: unable to compile test file"
     echo " $TEST_NAME: command: $COMMAND"
+    cat gcc.out
     end_test
-    exit 1
+    exit $EXIT_TEST_SKIPPED
 fi
 
 # Run annocheck
@@ -87,7 +86,7 @@ fi
 SKIPS="--skip-all --test-implicit-values --suppress-version-warnings"
 A_COMMAND="$ANNOCHECK implicit-func-test.exe $SKIPS"
 $A_COMMAND > implicit-func-test.out
-grep -e "Overall: FAIL" implicit-func-test.out
+grep -q -e"Overall: FAIL" implicit-func-test.out
 if [ $? != 0 ];
 then
     echo " $TEST_NAME: FAIL: compiling with -Wno-implicit-function-declaration still produces an executable that passes annocheck"
@@ -97,7 +96,7 @@ then
     $A_COMMAND --verbose
     uuencode implicit-func-test.exe implicit-func-test.exe
     end_test
-    exit 1
+    exit $EXIT_TEST_FAILED
 fi
 
 # Success!

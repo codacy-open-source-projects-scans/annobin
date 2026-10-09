@@ -1,0 +1,91 @@
+#!/bin/bash
+
+# Copyright (c) 2026 Red Hat.
+#
+# This is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published
+# by the Free Software Foundation; either version 3, or (at your
+# option) any later version.
+#
+# It is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# Test that annocheck detects the presence/absence of -Wall via --test-warnings
+
+TEST_NAME=warnings
+. $srcdir/common.sh
+
+PLUGIN_OPTS="-fplugin-arg-annobin-no-attach -fplugin-arg-annobin-verbose"
+# PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
+OPTS="-c -O2 -D_FORTIFY_SOURCE=2 -fPIE -fstack-protector-strong -D_GLIBCXX_ASSERTIONS -fstack-clash-protection -fno-lto"
+
+start_test
+
+# Part 1: Compile WITH -Wall
+
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -Wall -g -grecord-gcc-switches $srcdir/hello2.c"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test file with -Wall"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+SKIPS="--skip-all --test-warnings --suppress-version-warnings"
+A_COMMAND="$ANNOCHECK hello2.o --verbose $SKIPS"
+
+$A_COMMAND > $A_OUT
+grep -q -e"PASS: warnings test" $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not PASS for object compiled with -Wall"
+    echo " $TEST_NAME: compile command: $COMMAND"
+    echo " $TEST_NAME: annocheck command: $A_COMMAND"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck PASSed for an object compiled with -Wall"
+
+#--------------------------------------------------------------------------------
+
+# Part 2: Compile WITHOUT -Wall
+COMMAND="$GCC -fplugin=$PLUGIN $PLUGIN_OPTS $OPTS -w -g -grecord-gcc-switches -Wno-format-security $srcdir/hello2.c"
+$COMMAND > $G_OUT 2>&1
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: SKIP: unable to compile test file without -Wall"
+    echo " $TEST_NAME: command: $COMMAND"
+    cat $G_OUT
+    end_test
+    exit $EXIT_TEST_SKIPPED
+fi
+
+$A_COMMAND --enable-notes > $A_OUT
+grep -q -e"FAIL: warnings test" \
+     -e "MAYB: test: warnings" \
+     -e "skip: warnings test because the use of -Wall is not" \
+     $A_OUT
+if [ $? != 0 ];
+then
+    echo " $TEST_NAME: FAIL: annocheck did not FAIL for object compiled without -Wall"
+    echo " $TEST_NAME: compile command: $COMMAND"
+    echo " $TEST_NAME: compiler output:"
+    cat $G_OUT
+    echo " $TEST_NAME: annocheck command: $A_COMMAND"
+    echo " $TEST_NAME: annocheck output:"
+    cat $A_OUT
+    end_test
+    exit $EXIT_TEST_FAILED
+fi
+
+echo " $TEST_NAME: PASS: annocheck FAILed an object compiled without -Wall"
+
+end_test

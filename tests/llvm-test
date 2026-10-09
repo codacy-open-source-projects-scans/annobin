@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright (c) 2017-2026 Red Hat.
+# Copyright (c) 2017-2024 Red Hat.
 #
 # This is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published
@@ -12,18 +12,19 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
+
+# NB/ THIS TEST IS ONLY RUN WHEN ANNOBIN IS CONFIGURED WITH meson
+
+
 TEST_NAME=llvm
 . $srcdir/common.sh
 
 PLUGIN_OPTS="-fplugin-arg-annobin-no-attach"
-CLANG=clang
 PLUGIN=${LLVM_PLUGIN:-$TOP_BUILDDIR/llvm-plugin/annobin-for-llvm.so}
 
 start_test
 
-set -e
-
-PLUGIN_TEST_OPTIONS="\
+OPTS="\
    -D_FORTIFY_SOURCE=2 \
    -D_GLIBCXX_ASSERTIONS \
    -O2 \
@@ -33,24 +34,70 @@ PLUGIN_TEST_OPTIONS="\
    -fstack-protector-strong \
    -fsanitize=safe-stack"
 
-
 run_test() {
     load_plugin_arg=$1
 
-    $CLANG $load_plugin_arg $PLUGIN_TEST_OPTIONS -c $srcdir/hello-llvm-clang.c
-    $READELF --wide --notes hello-llvm-clang.o > llvm-plugin-test.out
-    grep --silent -e "annobin built by llvm version" llvm-plugin-test.out
-    grep --silent -e "running on LLVM version" llvm-plugin-test.out
-    grep --silent -e "stack_clash" llvm-plugin-test.out
-    echo "Pass LLVM plugin test [$load_plugin_arg]"
+    COMMAND="$CLANG $load_plugin_arg $OPTS -c $srcdir/hello-llvm-clang.c"
+    $COMMAND > $G_OUT 2>&1
+    if [ $? != 0 ];
+    then
+	echo " $TEST_NAME: SKIP: unable to compile test file"
+	echo " $TEST_NAME: command: $COMMAND"
+	cat $G_OUT
+	return 1
+    fi
+
+    EXE=hello-llvm-clang.o
+
+    $READELF --wide --notes $EXE > $A_OUT
+
+    grep -q -e "annobin built by llvm version" $A_OUT
+    if [ $? != 0 ];
+    then
+	echo " $TEST_NAME: FAIL: missing 'annobin built by llvm version' note"
+	cat $A_OUT
+	return 2
+    fi
+
+    grep -q -e "running on LLVM version" $A_OUT
+    if [ $? != 0 ];
+    then
+	echo " $TEST_NAME: FAIL: missing 'running on LLVM version' note"
+	cat $A_OUT
+	return 2
+    fi
+
+    grep -q -e "stack_clash" $A_OUT
+    if [ $? != 0 ];
+    then
+	echo " $TEST_NAME: FAIL: missing 'stack_clash' note"
+	cat $A_OUT
+	return 2
+    fi
+
+    $ANNOCHECK --skip-all --test-optimization --test-fortify --test-stack-prot $EXE > $A_OUT 2>&1
+    if [ $? != 0 ];
+    then
+	echo " $TEST_NAME: FAIL : LLVM plugin test"
+	cat $A_OUT
+	return 2
+    fi	
+
+    echo " $TEST_NAME: PASS: LLVM plugin test [$load_plugin_arg]"
+    return 0
 }
 
-version=`echo | clang -dM -E - | grep __clang_major__ | cut -f 3 -d ' '`
+version=`echo | $CLANG -dM -E - | grep __clang_major__ | cut -f 3 -d ' '`
 
 # Clang accepted -flegacy-pass-manager in versions 13 and 14.
 if [ $version -gt 12 -a $version -lt 15 ];
 then
     run_test "-flegacy-pass-manager -fplugin=$PLUGIN"
+    if [ $? = 2 ];
+    then
+	end_test
+	exit $EXIT_TEST_FAILED
+    fi
 fi
 
 if [ $version -gt 12 ];
@@ -58,6 +105,12 @@ then
     run_test "-fpass-plugin=$PLUGIN"
 else
     run_test "-Xclang -load -Xclang $PLUGIN"
+fi
+
+if [ $? = 2 ];
+then
+    end_test
+    exit $EXIT_TEST_FAILED
 fi
 
 end_test

@@ -153,7 +153,7 @@ enum profile
   PROFILE_F35,
 
   PROFILE_RHIVOS,
-  
+
   PROFILE_MAX
 };
 
@@ -166,7 +166,7 @@ typedef struct annobin_gcc_version_info
   uint        release;
   note_range  range;
 } annobin_gcc_version_info;
-  
+
 /* The contents of this structure are used on a per-input-file basis.
    The fields are initialised by start(), which by default sets them to 0/false.  */
 static struct per_file
@@ -190,7 +190,7 @@ static struct per_file
 
   annobin_gcc_version_info built_by;
   annobin_gcc_version_info run_on;
-  
+
   /* This array records the maximum version number of each known type of tool.
      A value of 0 means that the tool has not been seen.
      A negative value means that the tool may or may not have contributed to
@@ -198,7 +198,7 @@ static struct per_file
      has contributed.  */
   signed int  seen_tool_versions[TOOL_MAX];
   /* This is the index into the seen_tool_versions array of the most recently seen tool.  */
-  uint        current_tool; 
+  uint        current_tool;
 
   note_range    note_data;
 
@@ -232,11 +232,11 @@ static struct per_file
   bool         has_module_license;
   bool         has_pie_flag;
   bool	       has_program_interpreter;
-  
+
   bool         property_note_section_seen;
   bool         property_note_is_good_set;
   bool         property_note_is_good;
-  
+
   bool	       has_soname;
   bool	       has_symtab;
   bool         is_little_endian;
@@ -255,7 +255,6 @@ static struct per_file
   bool         seen_function_symbol;
   bool         seen_goboring_crypto;
   bool         seen_open_ssl;
-  bool         warned_about_instrumentation;
   bool         warned_about_assembler;
   bool         warned_address_range;
   bool         warned_asm_not_gcc;
@@ -421,6 +420,7 @@ static test tests [TEST_MAX] =
 
 /* Default to not reporting future tests - it could confuse ordinary users.  */
 static bool enable_future_tests = false;
+static bool producer_changed_not_seen = false;
 
 #ifdef LIBANNOCHECK
 static void libannocheck_record_test_pass    (uint testnum, const char * source, const char * reason);
@@ -667,6 +667,16 @@ is_executable (void)
   return per_file.e_type == ET_EXEC || per_file.e_type == ET_DYN;
 }
 
+/* Returns true if branch protection is used by the current architecture and compiler.  */
+static inline bool
+uses_branch_protection (void)
+{
+  /* Rust and Go binaries do not use branch protection.  */
+  if (RUST_compiler_seen () || GO_compiler_seen () || ! is_aarch64 ())
+    return false;
+  return true;
+}
+
 #ifndef LIBANNOCHECK
 /* Ensure that NAME will not use more than one line.  */
 
@@ -697,25 +707,25 @@ sanitize_filename (const char * name)
 static inline bool
 test_enabled (enum test_index check)
 {
-  struct test * t = tests + check;
-  
   if (check >= TEST_MAX)
     return false;
 
+  struct test * t = tests + check;
+
   if (t->future && ! enable_future_tests)
     return false;
-  
+
   return t->enabled;
 }
 
 static inline bool
 skip_test (enum test_index check)
 {
-  struct test * t = tests + check;
-
   if (! test_enabled (check))
     /* We do not issue a SKIP message for disabled tests.  */
     return true;
+
+  struct test * t = tests + check;
 
   if (t->state == STATE_FAILED || t->state == STATE_MAYBE)
     /* The test has already failed.  No need to test it again.  */
@@ -731,7 +741,7 @@ static bool
 untested (enum test_index check)
 {
   struct test * t = tests + check;
-  
+
   if (! test_enabled (check))
     return false;
 
@@ -874,7 +884,7 @@ show_url (enum test_index testnum, const char * filename)
 
 static const char * glibc_a_names[] =
 { /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
-  "abi-note.c",  
+  "abi-note.c",
   "abort",
   "abort.c",
   "add_n.c",
@@ -1173,7 +1183,7 @@ static const char * glibc_m_names[] =
   "mempcpy_chk.c",
   "memset_chk.c",
   "memusage.c",
-  "mp_clz_tab.c",  
+  "mp_clz_tab.c",
   "mul.c",
   "mul_1.c",
   "mul_n.c"
@@ -2351,7 +2361,7 @@ static const char * glibc_X_names[] =
   "../sysdeps/s390/strstr-vx.c",
   "../sysdeps/s390/strstr.c",
   "../sysdeps/s390/strstr.c:strstr_ifunc",
-  "../sysdeps/s390/wcschrnul-c.c",  
+  "../sysdeps/s390/wcschrnul-c.c",
   "../sysdeps/s390/wcslen-c.c",
   "../sysdeps/s390/wcsnlen-c.c",
   "../sysdeps/s390/wmemchr-c.c",
@@ -2646,7 +2656,7 @@ static const struct alpha_sorted_names
   unsigned int   num_elem;
   const char **  strings;
 } glibc_sources[26] =
-{ 
+{
   { ARRAY_SIZE (glibc_a_names), glibc_a_names }, /* 0 */
   { ARRAY_SIZE (glibc_b_names), glibc_b_names }, /* 1 */
   { ARRAY_SIZE (glibc_c_names), glibc_c_names }, /* 2 */
@@ -2683,7 +2693,7 @@ compare (const void * v1, const void * v2)
 
   return strcmp (s1, s2);
 }
-  
+
 /* Returns true iff NAME is in NAMES[NUM_NAMES].
    NAMES[] must be alpha sorted.
    FIXME: Switch to using a hash lookup mechanism ?  */
@@ -2725,7 +2735,7 @@ skip_checks_for_glibc_function (annocheck_data *  data,
       array = glibc_X_names;
       num   = ARRAY_SIZE (glibc_X_names);
     }
-      
+
   if (num == 0)
     return false;
 
@@ -2734,7 +2744,7 @@ skip_checks_for_glibc_function (annocheck_data *  data,
       /* FIXME: We need a way to determine that these files/functions are
 	 actually from the from the glibc sources and do not just happen
 	 to have a name in common.  */
-      sprintf (buffer, reason, component_name);
+      snprintf (buffer, sizeof buffer, reason, component_name);
       skip (data, t, SOURCE_SKIP_CHECKS, buffer);
       return true;
     }
@@ -2760,7 +2770,7 @@ skip_cf_protection_checks_for (annocheck_data * data, enum test_index check, con
 
   if (contains (non_cf_components, ARRAY_SIZE (non_cf_components), component_name))
     {
-      sprintf (buffer, "\
+      snprintf (buffer, sizeof buffer, "\
 function %s is part of the C library, and does not contain any code",
 	       component_name);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
@@ -2794,7 +2804,7 @@ skip_pic_checks_for_function (annocheck_data * data, enum test_index check, cons
 
   if (contains (non_pic_funcs, ARRAY_SIZE (non_pic_funcs), component_name))
     {
-      sprintf (buffer, "\
+      snprintf (buffer, sizeof buffer, "\
 function %s is used to start/end program execution and as such does not need to be compiled with PIE support",
 	       component_name);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
@@ -2827,7 +2837,7 @@ function %s is part of the C library's static code, which executes without stack
 
   if (contains (CGO_runtime_functions, ARRAY_SIZE (CGO_runtime_functions), component_name))
     {
-      sprintf (buffer, "\
+      snprintf (buffer, sizeof buffer, "\
 function %s is part of the CGO runtime library which is compiled without stack protection",
 	       component_name);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
@@ -2844,7 +2854,7 @@ function %s is part of the CGO runtime library which is compiled without stack p
 
   if (contains (stack_check_funcs, ARRAY_SIZE (stack_check_funcs), component_name))
     {
-      sprintf (buffer, "\
+      snprintf (buffer, sizeof buffer, "\
 function %s is part of the stack checking code and as such does not need stack protection itself",
 	       component_name);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
@@ -2859,7 +2869,7 @@ function %s is part of the stack checking code and as such does not need stack p
 
   if (contains (linker_funcs, ARRAY_SIZE (linker_funcs), component_name))
     {
-      sprintf (buffer, "\
+      snprintf (buffer, sizeof buffer, "\
 function %s is generated by the linker and as such does not use stack protection",
 	       component_name);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
@@ -2875,7 +2885,7 @@ skip_optimize_check_for_function (annocheck_data * data, enum test_index check, 
   /* This is a rather dubious heuristic for detecting glibc benchmark binaries.  */
   if (startswith (data->filename, "bench-"))
     {
-      sprintf (buffer, "\
+      snprintf (buffer, sizeof buffer, "\
 function %s is part of the C library's benchmarking suite which is deliberately built without optimization",
 	       component_name);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
@@ -2900,7 +2910,7 @@ skip_lto_checks_for_function (annocheck_data * data, enum test_index check, cons
       || startswith (data->filename, "bench-")
       )
     {
-      sprintf (buffer, "\
+      snprintf (buffer, sizeof buffer, "\
 function %s is part of the C library which is deliberately built without LTO",
 	       component_name);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
@@ -2971,7 +2981,21 @@ is_special_gcc_binary (annocheck_data * data)
   static const char * gcc_programs[] =
     {
       /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
+      "aarch64-redhat-linux-c++",
+      "aarch64-redhat-linux-cpp",
+      "aarch64-redhat-linux-g++",
+      "aarch64-redhat-linux-gcov",
+      "aarch64-redhat-linux-gcov-dump",
+      "aarch64-redhat-linux-gcov-tool",
+      "aarch64-redhat-linux-lto-dump",
+      "c++",
+      "cc1",
+      "cc1plus",
       "collect2",
+      "cpp",
+      "f951",
+      "g++",
+      "g++-mapper-server",
       "gcc",
       "gcc-ar",
       "gcc-nm",
@@ -2980,6 +3004,10 @@ is_special_gcc_binary (annocheck_data * data)
       "gcov",
       "gcov-dump",
       "gcov-tool",
+      "gengtype",
+      "gfortran",
+      "libdiagnostics.so.0.0.1",
+      "libgccjit.so.0.0.1",
       "liblto_plugin.so",
       "lto-dump",
       "lto-wrapper",
@@ -2988,7 +3016,29 @@ is_special_gcc_binary (annocheck_data * data)
       "nvptx-none-as",
       "nvptx-none-ld",
       "nvptx-none-nm",
-      "nvptx-none-run"
+      "nvptx-none-run",
+      "ppc64le-redhat-linux-c++",
+      "ppc64le-redhat-linux-cpp",
+      "ppc64le-redhat-linux-g++",
+      "ppc64le-redhat-linux-gcov",
+      "ppc64le-redhat-linux-gcov-dump",
+      "ppc64le-redhat-linux-gcov-tool",
+      "ppc64le-redhat-linux-lto-dump",
+      "s390x-redhat-linux-c++",
+      "s390x-redhat-linux-cpp",
+      "s390x-redhat-linux-g++",
+      "s390x-redhat-linux-gcov",
+      "s390x-redhat-linux-gcov-dump",
+      "s390x-redhat-linux-gcov-tool",
+      "s390x-redhat-linux-lto-dump",
+      "sarif-replay",
+      "x86_64-redhat-linux-c++",
+      "x86_64-redhat-linux-cpp",
+      "x86_64-redhat-linux-g++",
+      "x86_64-redhat-linux-gcov",
+      "x86_64-redhat-linux-gcov-dump",
+      "x86_64-redhat-linux-gcov-tool",
+      "x86_64-redhat-linux-lto-dump"
     };
 
   if (contains (gcc_programs, ARRAY_SIZE (gcc_programs), data->filename))
@@ -3025,7 +3075,7 @@ is_special_glibc_binary (annocheck_data * data)
 	  "libmvec.a:",
 	  "libmvec_nonshared.a:",
 	  "libnldbl_nonshared.a:",
-	  "libresolv.a:"
+	  "libresolv.a:",
 	  "libstdc++_nonshared.a:"
 	};
 
@@ -3064,7 +3114,7 @@ is_special_glibc_binary (annocheck_data * data)
 	  }
 
       if (i < 0)
-	return false;	  
+	return false;
     }
 
   /* Look for absolute paths to known glibc install locations.
@@ -3464,7 +3514,7 @@ skip_test_for_current_func (annocheck_data * data, enum test_index check)
 	case TEST_FORTIFY:
 	case TEST_STACK_CLASH:
 	case TEST_STACK_PROT:
-	  sprintf (buffer, "code at %#lx is a part of an ifunc", per_file.note_data.start);
+	  snprintf (buffer, sizeof buffer, "code at %#lx is a part of an ifunc", per_file.note_data.start);
 	  skip (data, check, SOURCE_SKIP_CHECKS, buffer);
 	  return true;
 	default:
@@ -3474,14 +3524,14 @@ skip_test_for_current_func (annocheck_data * data, enum test_index check)
 
   if (is_special_glibc_binary (data))
     {
-      sprintf (buffer, "the %s binary is a special case, hand-crafted by the glibc build system", data->filename);
+      snprintf (buffer, sizeof buffer, "the %s binary is a special case, hand-crafted by the glibc build system", data->filename);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
       return true;
     }
 
   if (is_special_clang_binary (data))
     {
-      sprintf (buffer, "the %s binary is a special case, part of the Clang runtime support system", data->filename);
+      snprintf (buffer, sizeof buffer, "the %s binary is a special case, part of the Clang runtime support system", data->filename);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
       return true;
     }
@@ -3501,7 +3551,7 @@ skip_test_for_current_func (annocheck_data * data, enum test_index check)
   if (streq (component_name, "elf_init.c")
       || streq (component_name, "init.c"))
     {
-      sprintf (buffer, "\
+      snprintf (buffer, sizeof buffer, "\
 function %s is part of the C library's startup code, which executes before a security framework is established",
 	       component_name);
       skip (data, check, SOURCE_SKIP_CHECKS, buffer);
@@ -3569,7 +3619,7 @@ fail (annocheck_data * data,
   if (already_passed (testnum))
     /* This does happen, so do not panic.  */
     einfo (VERBOSE2, "Changing test %s from PASS to FAIL\n", t->name);
-  
+
 #ifdef LIBANNOCHECK
   libannocheck_record_test_fail (testnum, source, reason);
 #else
@@ -3661,6 +3711,9 @@ maybe (annocheck_data * data,
 	free ((void *) fname);
     }
   else if (t->state == STATE_UNTESTED
+	    /* We can get a PASS followed by a MAYB.  Display the MAYB
+	       result as it will count towards the total failures.  */
+	   || t->state == STATE_PASSED
 	   || t->state == STATE_SKIPPED
 	   || BE_VERBOSE)
     {
@@ -3694,7 +3747,7 @@ maybe (annocheck_data * data,
     }
 #endif /* not LIBANNOCHECK */
 
-  if (t->state != STATE_FAILED)
+  if (t->state != STATE_FAILED) /* && t->state != STATE_PASSED */
     t->state = STATE_MAYBE;
 
   return true;
@@ -3801,6 +3854,12 @@ get_tool_name (enum tools tool)
 
 #define COMMENT_SECTION "comment section"
 
+static inline uint
+safe_abs (int v)
+{
+  return v < 0 ? - (uint) v : (uint) v;
+}
+
 static void
 add_producer (annocheck_data *  data,
 	      enum tools        tool,
@@ -3884,7 +3943,7 @@ add_producer (annocheck_data *  data,
 	}
       else if (per_file.seen_tool_versions[tool] < (int) version)
 	{
-	  if (! fixed_format_messages && (abs (per_file.seen_tool_versions[tool]) != version))
+	  if (! fixed_format_messages && (safe_abs (per_file.seen_tool_versions[tool]) != version))
 	    einfo (VERBOSE2, "resetting seen version from %d to %d", per_file.seen_tool_versions[tool], version);
 	  else
 	    einfo (VERBOSE2, "setting seen version to seen-with-code");
@@ -3923,7 +3982,7 @@ add_producer (annocheck_data *  data,
 	    }
 
 	  per_file.seen_tool_versions[TOOL_GCC] = 0;
-	}      
+	}
     }
   else if (per_file.seen_tool_versions[tool] > 0)
     {
@@ -3931,17 +3990,17 @@ add_producer (annocheck_data *  data,
 	einfo (VERBOSE2, "%s: info: ignore - we have seen a previous producer with code",
 	       get_filename (data));
     }
-  else if (abs (per_file.seen_tool_versions[tool]) == version)
+  else if (safe_abs (per_file.seen_tool_versions[tool]) == version)
     {
       if (! fixed_format_messages)
 	einfo (VERBOSE2, "%s: info: ignore - we have already recorded this producer",
 	       get_filename (data));
     }
-  else if (abs (per_file.seen_tool_versions[tool]) < version)
+  else if (safe_abs (per_file.seen_tool_versions[tool]) < version)
     {
       if (! fixed_format_messages)
 	einfo (VERBOSE2, "%s: info: changing tool %s from version from %u to %u, but still not seen with code",
-	       get_filename (data), get_tool_name (tool), abs (per_file.seen_tool_versions[tool]), version);
+	       get_filename (data), get_tool_name (tool), safe_abs (per_file.seen_tool_versions[tool]), version);
 
       per_file.seen_tool_versions[tool] = - version;
     }
@@ -3966,8 +4025,8 @@ parse_dw_at_language (annocheck_data * data, Dwarf_Attribute * attr)
 
   switch (val)
     {
-    case DW_LANG_Ada83: 
-    case DW_LANG_Ada95: 
+    case DW_LANG_Ada83:
+    case DW_LANG_Ada95:
       set_lang (data, LANG_ADA, SOURCE_DW_AT_LANGUAGE);
       break;
 
@@ -4034,6 +4093,23 @@ parse_dw_at_language (annocheck_data * data, Dwarf_Attribute * attr)
       set_lang (data, LANG_OTHER, SOURCE_DW_AT_LANGUAGE);
       break;
     }
+}
+
+/* Returns true iff the current file is a special kernel tool.
+   These are designed to run during the boot sequence and do
+   not support all the normal hardening features.  */
+
+static bool
+is_special_kernel_tool (annocheck_data * data)
+{
+  static const char * kernel_tool_names[] =
+    {
+      /* NB. KEEP THIS ARRAY ALPHA-SORTED  */
+      "bootconfig",
+      "intel_sdsi"
+    };
+
+  return contains (kernel_tool_names, ARRAY_SIZE (kernel_tool_names), data->filename);
 }
 
 /* Returns true if the current file is a loadable kernel module.
@@ -4119,18 +4195,20 @@ static bool
 is_gcc_component (annocheck_data * data)
 {
   const char * f = data->filename;
-  static const char * libraries[] =
+  static const char * gcc_archives[] =
     {
       "libasan.a:",
       "libatomic.a:",
+      "libcaf_shmem.a:",
       "libcaf_single.a:",
       "libg.a:",
       "libgcc.a:",
       "libgcc_eh.a:",
+      "libgcc_s-", /* Actual triggering filename was libgcc_s-15-20250425.so.1  */
       "libgcov.a:",
       "libgfortran.a:",
+      "libgfortran_nonshared.a:",
       "libgomp.a:",
-      "libgcc_s-", /* Actual triggering filename was libgcc_s-15-20250425.so.1  */
       "libhwasan.a:",
       "libitm.a:",
       "liblsan.a:",
@@ -4139,22 +4217,22 @@ is_gcc_component (annocheck_data * data)
       "libssp.a:",
       "libssp_nonshared.a:",
       "libstdc++.a:",
+      "libstdc++.so.6",
       "libstdc++exp.a:",
       "libstdc++fs.a:",
-      "libstdc++.so.6",
       "libsupc++.a:",
       "libtsan.a:",
       "libubsan.a:",
 
       NULL
     };
-    
+
   unsigned int i;
-  for (i = 0; libraries[i] != NULL; i++)
-    if (startswith (f, libraries[i]))
+  for (i = 0; gcc_archives[i] != NULL; i++)
+    if (startswith (f, gcc_archives[i]))
       return true;
 
-  static const char * objects[] =
+  static const char * gcc_objects[] =
     {
       /* NB/ KEEP THIS ARRAY ALPHA SORTED.  */
       "crt0.o",
@@ -4171,20 +4249,25 @@ is_gcc_component (annocheck_data * data)
       "crtprec32.o",
       "crtprec64.o",
       "crtprec80.o",
+      "libasan.so.8.0.0",
       "libasan_preinit.o",
+      "libgdiagnostics.so.0.0.1",
       "libgfortran.so.5.0.0",
       "libgomp.so.1",
       "libgomp.so.1.0.0",
       "libhwasan.so.0",
       "libhwasan.so.0.0.0",
       "libhwasan_preinit.o",
+      "libitm.so.1.0.0",
+      "liblsan.so.0.0.0",
       "liblsan_preinit.o",
       "libtsan.so.2",
       "libtsan.so.2.0.0",
-      "libtsan_preinit.o"
+      "libtsan_preinit.o",
+      "libubsan.so.1.0.0"
     };
 
-  return contains (objects, ARRAY_SIZE (objects), f);
+  return contains (gcc_objects, ARRAY_SIZE (gcc_objects), f);
 }
 
 static bool
@@ -4208,13 +4291,31 @@ is_gcc_assembler_source (annocheck_data * data)
 
       NULL
     };
-  
+
   unsigned int i;
   for (i = 0; gcc_specials[i] != NULL; i++)
     if (strstr (f, gcc_specials[i]) != NULL)
       return true;
 
   return false;
+}
+
+/* The Clang support files (static libraries and object files) are built without
+   annotation or debug info, so they will fail many of the tests dues to lack
+   of information.  This function is to enabled special exceptions for these
+   files.  */
+
+static bool
+is_clang_component (annocheck_data * data)
+{
+  static const char * objects[] =
+    {
+      /* NB/ KEEP THIS ARRAY ALPHA SORTED.  */
+      "clang_rt.crtbegin.o",
+      "clang_rt.crtend.o"
+    };
+
+  return contains (objects, ARRAY_SIZE (objects), data->filename);
 }
 
 static void
@@ -4256,7 +4357,7 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 		  if (! annocheck_debuginfod_enabled ())
 		    info (data, "maybe try enabling debuginfod ?");
 		}
-		     
+
 	      per_file.warned_dw_at_producer = true;
 	    }
 	}
@@ -4283,7 +4384,7 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 	where = strchr (where + strlen (tool->producer_string), ' ');
 	if (where != NULL)
 	  {
-	    version = strtod (where + 1, NULL);
+	    version = strtoul (where + 1, NULL, 10);
 	    /* Convert go1.14.13 into 14.
 	       Note - strictly speaking 14 is the revision, not the version.
 	       But the GO compiler is always version 1, and it is the
@@ -4291,7 +4392,7 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 	    if (version == 0
 		&& madeby == TOOL_GO
 		&& strncmp (where + 1, "go1.", 4) == 0)
-	      version = strtod (where + 5, NULL);
+	      version = strtoul (where + 5, NULL, 10);
 	  }
 
 	break;
@@ -4354,7 +4455,7 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 	per_file.seen_annobin_plugin_in_dw_at_producer = true;
       else
 	per_file.not_seen_annobin_plugin_in_dw_at_producer = true;
-      
+
       if (strstr (string, "-flto"))
 	{
 	  per_file.lto_used = true;
@@ -4379,16 +4480,30 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
       else if (strstr (string, "-fstack-protector"))
 	fail (data, TEST_STACK_PROT, SOURCE_DW_AT_PRODUCER, "insufficient protection enabled (based on contents of DW_AT_producer string)");
       else
-	vvinfo (data, TEST_STACK_PROT, SOURCE_DW_AT_PRODUCER, "not found in DW_AT_producer string");
-
+	vvinfo (data, TEST_STACK_PROT, SOURCE_DW_AT_PRODUCER, "option not found in DW_AT_producer string");
 
       if (skip_test (TEST_STACK_CLASH))
 	;
       else if (strstr (string, "-fstack-clash-protection"))
 	pass (data, TEST_STACK_CLASH, SOURCE_DW_AT_PRODUCER, "option found in DW_AT_producer string");
       else
-	vvinfo (data, TEST_STACK_CLASH, SOURCE_DW_AT_PRODUCER, "not found in DW_AT_producer string");
-      
+	vvinfo (data, TEST_STACK_CLASH, SOURCE_DW_AT_PRODUCER, "option not found in DW_AT_producer string");
+
+      if (skip_test (TEST_THREADS))
+	;
+      else if (strstr (string, "-fexceptions"))
+	pass (data, TEST_THREADS, SOURCE_DW_AT_PRODUCER, "-fexceptions option found in DW_AT_producer string");
+      else if (strstr (string, "-fno-exceptions"))
+	{
+	  if (is_gcc_component (data)
+	      || is_special_gcc_binary (data))
+	    skip (data, TEST_THREADS, SOURCE_DW_AT_PRODUCER, "-fno-exceptions is OK for GCC support files");
+	  else
+	    fail (data, TEST_THREADS, SOURCE_DW_AT_PRODUCER, "-fno-exceptions option found in DW_AT_producer string");
+	}
+      else
+	vvinfo (data, TEST_THREADS, SOURCE_DW_AT_PRODUCER, "-fexceptions not found in DW_AT_producer string");
+
       if (is_x86_64 ())
 	{
 	  if (skip_test (TEST_CF_PROTECTION))
@@ -4414,7 +4529,7 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
       else
 	vvinfo (data, TEST_OPTIMIZATION, SOURCE_DW_AT_PRODUCER, "not found in DW_AT_producer string");
     }
-  
+
   if (strstr (string, "-W"))
     {
       options_found = true;
@@ -4480,7 +4595,7 @@ parse_dw_at_producer (annocheck_data * data, Dwarf_Attribute * attr)
 	/* Non C like languages may not need branch protection enabled.  */
 	;
       else
-	vvinfo (data, TEST_FORTIFY, SOURCE_DW_AT_PRODUCER, "option not found in DW_AT_producer string");	
+	vvinfo (data, TEST_BRANCH_PROTECTION, SOURCE_DW_AT_PRODUCER, "option not found in DW_AT_producer string");
     }
 
   if (!options_found && BE_VERBOSE && ! per_file.warned_command_line)
@@ -4509,7 +4624,6 @@ dwarf_attribute_checker (annocheck_data *  data,
 			 Dwarf_Die *       die,
 			 void *            ptr ATTRIBUTE_UNUSED)
 {
-  static bool producer_changed_not_seen = false;
   Dwarf_Attribute  attr;
 
   if (dwarf_attr (die, DW_AT_language, & attr) != NULL)
@@ -4551,19 +4665,19 @@ static const struct profiles
   profiles [PROFILE_MAX] =
 {
   [ PROFILE_NONE ] = { { "none" } },
-  
-  [ PROFILE_EL7 ] = { { "el7", "rhel-7" }, 
+
+  [ PROFILE_EL7 ] = { { "el7", "rhel-7" },
 		      { ".el7" },
 		      {	TEST_BIND_NOW, TEST_BRANCH_PROTECTION, TEST_CF_PROTECTION,
 			TEST_DYNAMIC_TAGS, TEST_ENTRY, TEST_FORTIFY, TEST_LTO,
 			TEST_PIE, TEST_PROPERTY_NOTE, TEST_STACK_CLASH, TEST_OPENSSL_ENGINE },
 		      { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS } },
-  
+
   [ PROFILE_EL8 ] = { { "el8", "rhel-8" },
 		      { ".el8" },
 		      { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS, TEST_LTO, TEST_OPENSSL_ENGINE },
 		      { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS } },
-  
+
   [ PROFILE_EL9 ] = { { "el9", "rhel-9", "rhel-9-devel", "el9_0" },
 		      {".el9" },
 		      { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS, TEST_OPENSSL_ENGINE },
@@ -4585,10 +4699,10 @@ static const struct profiles
 			  { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS } },
 
   [ PROFILE_F35 ] = { { "f35" }, /* Like RHEL - does not use AArch64 dynamic tags.  */
-		      { ".fc35" },    
+		      { ".fc35" },
 		      { TEST_BRANCH_PROTECTION, TEST_DYNAMIC_TAGS, TEST_FIPS, TEST_OPENSSL_ENGINE },
 		      { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS } },
-  
+
   [ PROFILE_RHIVOS ] = { { "rhivos" },
 		      {  },
 		      { TEST_NOT_BRANCH_PROTECTION, TEST_NOT_DYNAMIC_TAGS },
@@ -4667,7 +4781,7 @@ make_profile_based_changes (void)
 #endif
 	}
     }
-  
+
   if (! fail_for_all_unicode.option_set)
     fail_for_all_unicode.option_value = is_RHEL_profile ();
 }
@@ -4685,7 +4799,7 @@ get_profile_based_upon_filename (annocheck_data * data)
     filename = data->filename;
   else
     filename = data->input_filename;
-    
+
   for (i = ARRAY_SIZE (profiles); i--;)
     {
       int j;
@@ -4758,13 +4872,14 @@ start (annocheck_data * data)
       tests [TEST_DYNAMIC_TAGS].enabled = false;
 #endif
     }
-  
+
   /* Initialise other per-file variables.  */
   memset (& per_file, 0, sizeof per_file);
+  producer_changed_not_seen = false;
 
   if (suppress_version_warnings.option_value == true)
     per_file.warned_version_mismatch = true;
-      
+
   per_file.text_section_name_index = -1;
 
   if (selected_profile == PROFILE_AUTO)
@@ -4773,10 +4888,13 @@ start (annocheck_data * data)
     per_file.profile = selected_profile;
 
    make_profile_based_changes ();
-  
+
   if (data->is_32bit)
     {
       Elf32_Ehdr * hdr = elf32_getehdr (data->elf);
+
+      if (hdr == NULL)
+	return false;
 
       per_file.e_type = hdr->e_type;
       per_file.e_machine = hdr->e_machine;
@@ -4786,6 +4904,9 @@ start (annocheck_data * data)
   else
     {
       Elf64_Ehdr * hdr = elf64_getehdr (data->elf);
+
+      if (hdr == NULL)
+	return false;
 
       per_file.e_type = hdr->e_type;
       per_file.e_machine = hdr->e_machine;
@@ -4881,7 +5002,7 @@ interesting_sec (annocheck_data *     data,
 	}
       else
 	pass (data, TEST_WRITABLE_GOT, SOURCE_SECTION_HEADERS, "section headers look good");
-	
+
       return false;
     }
 
@@ -5114,7 +5235,7 @@ overlaps (note_range * r1, note_range * r2)
     return false;
   return true;
 }
-  
+
 static void
 record_annobin_version (annocheck_data *  data,
 			bool              is_annobin_run_on,
@@ -5136,7 +5257,7 @@ record_annobin_version (annocheck_data *  data,
     info = & per_file.run_on;
   else
     info = & per_file.built_by;
-  
+
   if (info->range.start == 0 && info->range.end == 0)
     {
       if (major == 0)
@@ -5146,14 +5267,14 @@ record_annobin_version (annocheck_data *  data,
 	}
 
       info->range.start = range->start;
-      info->range.end = range->end;      
+      info->range.end = range->end;
       info->major = major;
       info->minor = minor;
       info->release = release;
 
       /* If we have already recorded information for the other
 	 sort of version, then compare the two now.  */
-      
+
       if (is_annobin_run_on)
 	info = & per_file.built_by;
       else
@@ -5170,7 +5291,7 @@ record_annobin_version (annocheck_data *  data,
 	    {
 	      if (! per_file.warned_version_mismatch)
 		{
-		  warn (data, "plugin version mismatch detected");
+		  warn (data, "plugin compiler version mismatch detected");
 
 		  einfo (VERBOSE, "debug: the annobin plugin generating notes for the range %lx..%lx...",
 			 (unsigned long) per_file.run_on.range.start,
@@ -5317,21 +5438,21 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
     {
       if (value == (unsigned long) -1)
 	{
-	  maybe (data, TEST_OPTIMIZATION, source, "unexpected note value");
+	  maybe (data, TEST_OPTIMIZATION, source, "unexpected GOW note value");
 	  einfo (VERBOSE, "debug: optimization note value: %lx", value);
 	}
-      else if (value & (1 << 13))
+      else if (value & GOW_BIT_OG)
 	{
 	  /* Compiled with -Og rather than -O2.
 	     Treat this as a flag to indicate that the package developer is
 	     intentionally not compiling with -O2, so suppress warnings about it.  */
 	  skip (data, TEST_OPTIMIZATION, source, "Compiled with -Og");
-	  
+
 	  /* Add a pass result so that we do not complain about lack of optimization information.  */
 	  if (untested (TEST_OPTIMIZATION))
 	    tests[TEST_OPTIMIZATION].state = STATE_PASSED;
 	}
-      else if (((value >> 9) & 3) < 2)
+      else if (GOW_OPT_LEVEL (value) < 2)
 	fail (data, TEST_OPTIMIZATION, source, "level too low (based upon annobin data)");
       else
 	pass (data, TEST_OPTIMIZATION, source, "sufficient optimization level used when compiling");
@@ -5339,8 +5460,8 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 
   if (! skip_test (TEST_FAST))
     {
-      bool set = (value & (1 << 12)) ? true : false;
-      
+      bool set = (value & GOW_BIT_OFAST) ? true : false;
+
       if (skip_test_for_current_func (data, TEST_FAST))
 	;
       else if (! per_file.fast_note_seen)
@@ -5360,12 +5481,12 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 
   if (! skip_test (TEST_WARNINGS))
     {
-      if (value & (1 << 14))
+      if (value & GOW_BIT_WALL)
 	{
 	  /* Compiled with -Wall.  */
 	  pass (data, TEST_WARNINGS, source, "compiled with -Wall");
 	}
-      else if (value & (1 << 15))
+      else if (value & GOW_BIT_WFS)
 	{
 	  /* Compiled with -Wformat-security but not -Wall.
 	     FIXME: We allow this for now, but really would should check for
@@ -5381,7 +5502,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
       /* Gimple compilation discards warnings.  */
       else if (per_file.current_tool == TOOL_GIMPLE)
 	skip (data, TEST_WARNINGS, source, "LTO compilation discards preprocessor options");
-      else if (value & ((1 << 16) | (1 << 17)))
+      else if (value & GOW_BIT_LTO)
 	{
 	  /* LTO compilation.  Normally caught by the GIMPLE test
 	     above, but that does not work on stripped binaries.
@@ -5390,26 +5511,33 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 	  if (untested (TEST_WARNINGS))
 	    tests[TEST_WARNINGS].state = STATE_PASSED;
 	}
+      else if (GCC_compiler_used ())
+	/* FIXME: Prior to version 13.17 the gcc plugin would miss the presence
+	   of -Wall for some versions of gcc.  But we do not record the plugin
+	   version number in the annobin data, so we cannot detect this situation.  */
+	skip (data, TEST_WARNINGS, source, "the use of -Wall is not reliably recorded by the gcc plugin");
       else
 	fail (data, TEST_WARNINGS, source, "compiled without either -Wall or -Wformat-security");
     }
 
   if (skip_test (TEST_LTO))
     {
-      if (value & (1 << 16))
+      if (value & GOW_BIT_LTO)
 	per_file.lto_used = true;
     }
-  else if (value & (1 << 16))
+  else if (value & GOW_BIT_LTO)
     {
-      if (value & (1 << 17))
+      if (value & GOW_BIT_NO_LTO)
 	fail (data, TEST_LTO, source, "ICE: both LTO and no-LTO bits set in annobin notes - this should not happen");
       else
 	pass (data, TEST_LTO, source, "LTO compilation detected");
     }
-  else if (value & (1 << 17))
+  else if (value & GOW_BIT_NO_LTO)
     {
       if (is_special_glibc_binary (data))
 	skip (data, TEST_LTO, source, "glibc code is compiled without LTO");
+      else if (is_special_kernel_tool (data))
+	skip (data, TEST_LTO, source, "kernel tools can be compiled without LTO");
       else
 	/* Compiled with -fno-lto.  */
 	maybe_fail (data, TEST_LTO, source, "a region of code compiled without LTO was detected");
@@ -5421,7 +5549,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 
   if (! skip_test (TEST_AUTO_VAR_INIT))
     {
-      switch ((value >> 18) & 3)
+      switch (GOW_AUTO_VAR (value))
 	{
 	case 0:
 	  skip (data, TEST_AUTO_VAR_INIT, source, "-ftrivial-auto-var-init is not supported by the compiler");
@@ -5440,7 +5568,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 
   if (! skip_test (TEST_ZERO_CALL_USED_REGS))
     {
-      switch ((value >> 20) & 3)
+      switch ((value >> GOW_BITSTART_ZERO_CALL) & GOW_BITMASK_ZERO_CALL)
 	{
 	case 0:
 	  skip (data, TEST_ZERO_CALL_USED_REGS, source, "-fzero-call-used-regs not supported");
@@ -5450,6 +5578,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 	  break;
 	case 2:
 	  maybe (data, TEST_ZERO_CALL_USED_REGS, source, "*unexpected value found in notes*");
+	  einfo (VERBOSE2, "debug: value = 2");
 	  break;
 	case 3:
 	  pass (data, TEST_ZERO_CALL_USED_REGS, source, "-fzero-call-used-regs used");
@@ -5459,7 +5588,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 
   if (! skip_test (TEST_IMPLICIT_VALUES))
     {
-      switch ((value >> 22) & 3)
+      switch ((value >> GOW_BITSTART_IMPLICIT_INT) & GOW_BITMASK_IMPLICIT_INT)
 	{
 	case 0:
 	  skip (data, TEST_IMPLICIT_VALUES, source, "-Wimplicit-int not recorded by plugin");
@@ -5469,7 +5598,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 	    {
 	      if (GCC_compiler_used ())
 		{
-		  if (((value >> 24) & 3) == 1)
+		  if (((value >> GOW_BITSTART_IMPLICIT_FUNC) & GOW_BITMASK_IMPLICIT_FUNC) == 1)
 		    fail (data, TEST_IMPLICIT_VALUES, source, "-Wimplicit-int and -Wimplicit-function-declaration not enabled");
 		  else
 		    fail (data, TEST_IMPLICIT_VALUES, source, "-Wimplicit-int not enabled");
@@ -5478,7 +5607,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 		skip (data, TEST_IMPLICIT_VALUES, source, "-Wimplicit-int is not recorded for Clang");
 	    }
 	  else
-	    skip (data, TEST_IMPLICIT_VALUES, source, "-Wimplicit-int not enabled, but source code is not C");	    
+	    skip (data, TEST_IMPLICIT_VALUES, source, "-Wimplicit-int not enabled, but source code is not C");
 	  break;
 	case 2:
 	  if (per_file.lto_used)
@@ -5487,12 +5616,12 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 	    skip (data, TEST_IMPLICIT_VALUES, source, "-Wimplicit-int has its defalt (on) setting");
 	  break;
 	case 3:
-	  if (((value >> 24) & 3) == 3)
+	  if (((value >> GOW_BITSTART_IMPLICIT_FUNC) & GOW_BITMASK_IMPLICIT_FUNC) == 3)
 	    pass (data, TEST_IMPLICIT_VALUES, source, "-Wimplicit-int and -Wimplicit-function-decalration enabled");
 	  break;
 	}
 
-      switch ((value >> 24) & 3)
+      switch ((value >> GOW_BITSTART_IMPLICIT_FUNC) & GOW_BITMASK_IMPLICIT_FUNC)
 	{
 	case 0:
 	  skip (data, TEST_IMPLICIT_VALUES, source, "-Wimplicit-function-declaration not recorded by plugin");
@@ -5502,7 +5631,7 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 	    {
 	      if (GCC_compiler_used ())
 		{
-		  if (((value >> 22) & 3) == 1)
+		  if (((value >> GOW_BITSTART_IMPLICIT_INT) & GOW_BITMASK_IMPLICIT_INT) == 1)
 		    ; /* We have already issued a FAIL message.  */
 		  else
 		    fail (data, TEST_IMPLICIT_VALUES, source, "-Wimplicit-function-declaration not enabled");
@@ -5527,13 +5656,13 @@ check_GOW (annocheck_data * data, unsigned long value, const char * source)
 
   if (! skip_test (TEST_FLEX_ARRAYS))
     {
-      if (((value >> 26) & 1) == 0)
+      if ((value & GOW_BIT_FLEX_ARRAY) == 0)
 	skip (data, TEST_FLEX_ARRAYS, source, "compiler does not support flexible array hardening");
 
-      else if (((value >> 27) & 1) == 0)
+      else if ((value & GOW_BIT_WARN_FLEX) == 0)
 	fail (data, TEST_FLEX_ARRAYS, source, "-Wstrict-flex-arrays warning not enabled");
 
-      else if (((value >> 28) & 1) == 0)
+      else if ((value & GOW_BIT_STRICT_FLEX) == 0)
 	fail (data, TEST_FLEX_ARRAYS, source, "-fstrict-flex-arrays not enabled");
 
       else
@@ -5677,7 +5806,7 @@ parse_version_note (annocheck_data *  data,
 
   uint version = 0;
   if (* attr != 0)
-    version = strtod (attr, NULL);
+    version = strtoul (attr, NULL, 10);
 
   const char * name;
   switch (producer)
@@ -5766,19 +5895,19 @@ parse_aarch64_branch_protection_note (annocheck_data *  data,
 	   /* We use startswith() because pac-ret can be optionally followed by +leaf and/or +b-key.  */
 	   || startswith (attr, "pac-ret"))
     {
-      maybe (data, TEST_NOT_BRANCH_PROTECTION, source, "branch protection is enabled - but not supported by the OS");
+      skip (data, TEST_NOT_BRANCH_PROTECTION, source, "branch protection is enabled - but not supported by the OS");
       /* Do not PASS this test yet - there may be later notes that fail.  */
       per_file.branch_protection_pending_pass = true;
     }
   else if (strstr (attr, "bti"))
     {
       fail (data, TEST_BRANCH_PROTECTION, source, "only partially enabled (bti enabled, pac-ret disabled)");
-      maybe (data, TEST_NOT_BRANCH_PROTECTION, source, "branch protection is partially enabled, but not supported by the OS");
+      skip (data, TEST_NOT_BRANCH_PROTECTION, source, "branch protection is partially enabled, but not supported by the OS");
     }
   else if (strstr (attr, "pac-ret"))
     {
       fail (data, TEST_BRANCH_PROTECTION, source, "only partially enabled (pac-ret enabled, bti disabled)");
-      maybe (data, TEST_NOT_BRANCH_PROTECTION, source, "branch protection is partially enabled, but not supported by the OS");
+      skip (data, TEST_NOT_BRANCH_PROTECTION, source, "branch protection is partially enabled, but not supported by the OS");
     }
   else
     {
@@ -6041,7 +6170,7 @@ build_note_checker (annocheck_data *     data,
 	case -1:
 	default:
 	  maybe (data, TEST_PIC, SOURCE_ANNOBIN_NOTES, "unexpected value");
-	  einfo (VERBOSE2, "debug: PIC note value: %x", value);
+	  einfo (VERBOSE2, "debug: PIC note value: %#x", value);
 	  break;
 
 	case 0:
@@ -6077,6 +6206,7 @@ build_note_checker (annocheck_data *     data,
 	case -1:
 	default:
 	  maybe (data, TEST_STACK_PROT, SOURCE_ANNOBIN_NOTES, "unexpected note value");
+	  einfo (VERBOSE, "debug: value = %#x", value);
 	  break;
 
 	case 0: /* NONE */
@@ -6107,7 +6237,7 @@ build_note_checker (annocheck_data *     data,
       if (value > 1)
 	{
 	  maybe (data, TEST_SHORT_ENUMS, SOURCE_ANNOBIN_NOTES, "unexpected note value");
-	  einfo (VERBOSE2, "debug: enum note value: %x", value);
+	  einfo (VERBOSE, "debug: enum note value: %#x", value);
 	}
       else if (per_file.short_enum_state == SHORT_ENUM_STATE_UNSET)
 	per_file.short_enum_state = state;
@@ -6148,7 +6278,7 @@ build_note_checker (annocheck_data *     data,
 	    case -1:
 	    default:
 	      maybe (data, TEST_CF_PROTECTION, SOURCE_ANNOBIN_NOTES, "unexpected note value");
-	      einfo (VERBOSE2, "debug: cf prot note value: %x", value);
+	      einfo (VERBOSE, "debug: cf prot note value: %#x", value);
 	      break;
 
 	    case 0: /* ???  */
@@ -6196,7 +6326,7 @@ build_note_checker (annocheck_data *     data,
 	    case -1:
 	    default:
 	      maybe (data, TEST_FORTIFY, SOURCE_ANNOBIN_NOTES, "unexpected note value");
-	      einfo (VERBOSE2, "debug: fortify note value: %x", value);
+	      einfo (VERBOSE, "debug: fortify note value: %#x", value);
 	      break;
 
 	    case 0xfe:
@@ -6237,7 +6367,7 @@ build_note_checker (annocheck_data *     data,
 	    case 0:
 	    case 1:
 	      if (is_special_glibc_binary (data))
-		skip (data, TEST_FORTIFY, SOURCE_ANNOBIN_NOTES, "glibc binaries are built without fortification");		
+		skip (data, TEST_FORTIFY, SOURCE_ANNOBIN_NOTES, "glibc binaries are built without fortification");
 	      else
 		fail (data, TEST_FORTIFY, SOURCE_ANNOBIN_NOTES, "fortification level is too low");
 	      break;
@@ -6248,7 +6378,7 @@ build_note_checker (annocheck_data *     data,
 		  maybe (data, TEST_FORTIFY, SOURCE_ANNOBIN_NOTES, "-D_FORTIFY_SOURCE=2 detected, expected -D_FORTIFY_SOURCE=3");
 		  break;
 		}
-	      /* Fall through.  */	      
+	      /* Fall through.  */
 	    case 3:
 	      pass (data, TEST_FORTIFY, SOURCE_ANNOBIN_NOTES, "fortify note found");
 	      break;
@@ -6284,7 +6414,7 @@ build_note_checker (annocheck_data *     data,
 
 	    default:
 	      maybe (data, TEST_GLIBCXX_ASSERTIONS, SOURCE_ANNOBIN_NOTES, "unexpected note value");
-	      einfo (VERBOSE2, "debug: assertion note value: %x", value);
+	      einfo (VERBOSE, "debug: assertion note value: %#x", value);
 	      break;
 	    }
 	}
@@ -6298,14 +6428,10 @@ build_note_checker (annocheck_data *     data,
 	  if (skip_test (TEST_INSTRUMENTATION))
 	    break;
 
-	  if (! per_file.warned_about_instrumentation
-	      && ! skip_test_for_current_func (data, TEST_INSTRUMENTATION))
+	  if (! skip_test_for_current_func (data, TEST_INSTRUMENTATION))
 	    {
-	      einfo (INFO, "%s: WARN: %sInstrumentation enabled - this is probably a mistake for production binaries",
-		       get_filename (data),
-		       get_formatted_component_name ("(%s): "));
-
-	      per_file.warned_about_instrumentation = true;
+	      maybe (data, TEST_INSTRUMENTATION, SOURCE_ANNOBIN_NOTES,
+		     "instrumentation enabled - this is probably a mistake for production binaries");
 
 	      if (BE_VERBOSE)
 		{
@@ -6359,10 +6485,12 @@ build_note_checker (annocheck_data *     data,
 	  switch (value)
 	    {
 	    case 0:
-	      if (is_riscv ())
-		skip (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_NOTES, "-fstack-clash-protection not enabled on RISC-V");
+	      if (is_riscv ()
+		  && per_file.seen_tool_versions[TOOL_GCC] > 0
+		  && per_file.seen_tool_versions[TOOL_GCC] < 15)
+		skip (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_NOTES, "-fstack-clash-protection not enabled on RISC-V prior to gcc version 15");
 	      else
-		fail (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_NOTES, "-fstack-clash-protection not enabled");		
+		fail (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_NOTES, "-fstack-clash-protection not enabled");
 	      break;
 
 	    case 1:
@@ -6371,7 +6499,7 @@ build_note_checker (annocheck_data *     data,
 
 	    default:
 	      maybe (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_NOTES, "unexpected note value");
-	      einfo (VERBOSE2, "debug: stack clash note value: %x", value);
+	      einfo (VERBOSE, "debug: stack clash note value: %#x", value);
 	      break;
 	    }
 	}
@@ -6387,7 +6515,7 @@ build_note_checker (annocheck_data *     data,
 	    {
 	    default:
 	      maybe (data, TEST_STACK_REALIGN, SOURCE_ANNOBIN_NOTES, "unexpected note value");
-	      einfo (VERBOSE2, "debug: stack realign note value: %x", value);
+	      einfo (VERBOSE, "debug: stack realign note value: %#x", value);
 	      break;
 
 	    case 0:
@@ -6487,10 +6615,10 @@ handle_aarch64_property_note (annocheck_data *      data,
 #ifndef GNU_PROPERTY_AARCH64_FEATURE_1_GCS
 #define GNU_PROPERTY_AARCH64_FEATURE_1_GCS	(1U << 2)
 #endif
-  
+
   if (type != GNU_PROPERTY_AARCH64_FEATURE_1_AND)
     {
-      einfo (VERBOSE2, "%s: debug: property note type %lx", get_filename (data), type);
+      einfo (VERBOSE, "%s: debug: property note type %lx", get_filename (data), type);
       return "unexpected property note type";
     }
 
@@ -6501,6 +6629,12 @@ handle_aarch64_property_note (annocheck_data *      data,
       return "the property note data has an invalid size";
     }
 
+  per_file.seen_aarch64_property_note = true;
+
+  /* Rust and Go binaries do not use branch protection.  */
+  if (! uses_branch_protection ())
+    return NULL;
+
   ulong property = get_4byte_value (notedata);
 
   if ((property & GNU_PROPERTY_AARCH64_FEATURE_1_BTI) == 0)
@@ -6508,8 +6642,6 @@ handle_aarch64_property_note (annocheck_data *      data,
       if (test_enabled (TEST_BRANCH_PROTECTION))
 	return "the BTI property is not enabled";
     }
-
-  per_file.seen_aarch64_property_note = true;
 
   if ((property & GNU_PROPERTY_AARCH64_FEATURE_1_PAC) == 0)
     future_fail (data, TEST_BRANCH_PROTECTION, SOURCE_PROPERTY_NOTES, "The AArch64 PAC property is not enabled");
@@ -6625,7 +6757,7 @@ property_note_checker (annocheck_data *     data,
 
   if (note->n_type != NT_GNU_PROPERTY_TYPE_0)
     {
-      einfo (VERBOSE2, "%s: info: unexpected GNU Property note type %x - ignoring", get_filename (data), note->n_type);
+      einfo (VERBOSE2, "%s: info: unexpected GNU Property note type %#x - ignoring", get_filename (data), note->n_type);
       /* Return true so that other notes will be scanned.  */
       return true;
     }
@@ -6687,8 +6819,17 @@ property_note_checker (annocheck_data *     data,
       if ((reason = handler (data, sec, type, size, notedata)) != NULL)
 	goto fail;
 
-      notedata  += ((size + (expected_quanta - 1)) & ~ (expected_quanta - 1));
-      remaining -= ((size + (expected_quanta - 1)) & ~ (expected_quanta - 1));
+      ulong aligned_size = (size + (expected_quanta - 1)) & ~ (expected_quanta - 1);
+      if (aligned_size > remaining)
+	{
+	  notedata  += remaining;
+	  remaining  = 0;
+	}
+      else
+	{
+	  notedata  += aligned_size;
+	  remaining -= aligned_size;
+	}
     }
 
   if (remaining > 0)
@@ -6903,7 +7044,7 @@ check_annobin_fortify_level (annocheck_data *    data,
 	skip (data, TEST_FORTIFY, SOURCE_ANNOBIN_STRING_NOTES, "glibc binaries are built without fortification");
       else if (not_written_in_C ())
 	/* Fortran compile command lines for example.  */
-	skip (data, TEST_FORTIFY, SOURCE_ANNOBIN_STRING_NOTES, "non-C binaries do not need fortification");	
+	skip (data, TEST_FORTIFY, SOURCE_ANNOBIN_STRING_NOTES, "non-C binaries do not need fortification");
       else
 	fail (data, TEST_FORTIFY, SOURCE_ANNOBIN_STRING_NOTES, "-D_FORTIFY_SOURCE=[0|1] was found on the command line");
       break;
@@ -6919,7 +7060,7 @@ check_annobin_fortify_level (annocheck_data *    data,
 	  maybe (data, TEST_FORTIFY, SOURCE_ANNOBIN_STRING_NOTES, "-D_FORTIFY_SOURCE=2 detected, expected -D_FORTIFY_SOURCE=3");
 	  break;
 	}
-      /* Fall through.  */	      
+      /* Fall through.  */
     case '3':
       pass (data, TEST_FORTIFY, SOURCE_ANNOBIN_STRING_NOTES, "fortify note found");
       break;
@@ -6941,27 +7082,28 @@ check_annobin_glibcxx_assert (annocheck_data *    data,
   if (skip_test (TEST_GLIBCXX_ASSERTIONS))
     return;
 
-  int index = (*ptr == '-' ? 1 : 0);
+  char * endptr;
+  long value = strtol (ptr, & endptr, 10);
 
-  if (ptr[index + 1] != 0 && ptr[index + 1] != ' ')
+  if (endptr == ptr || (* endptr != 0 && * endptr != ' '))
     {
       maybe (data, TEST_GLIBCXX_ASSERTIONS, SOURCE_ANNOBIN_STRING_NOTES, "unexpected note value");
       einfo (VERBOSE, "debug: glibcxx assertions note value: %s", ptr);
       return;
     }
 
-  switch (ptr[index])
+  switch (value)
     {
-    case '0':
+    case 0:
       fail (data, TEST_GLIBCXX_ASSERTIONS, SOURCE_ANNOBIN_STRING_NOTES, "compiled without -D_GLIBCXX_ASSERTIONS");
       break;
 
-    case '1':
+    case 1:
       pass (data, TEST_GLIBCXX_ASSERTIONS, SOURCE_ANNOBIN_STRING_NOTES, "compiled with -D_GLIBCXX_ASSERTIONS");
       break;
 
     default:
-      maybe (data, TEST_GLIBCXX_ASSERTIONS, SOURCE_ANNOBIN_STRING_NOTES, "unexpected note value");
+      maybe (data, TEST_GLIBCXX_ASSERTIONS, SOURCE_ANNOBIN_STRING_NOTES, "status could not be determined");
       einfo (VERBOSE, "debug: glibcxx assertions note value: %s", ptr);
       break;
     }
@@ -6982,36 +7124,32 @@ check_annobin_profiling (annocheck_data *    data,
 {
   if (skip_test (TEST_INSTRUMENTATION))
     return;
-  
-  if (skip_test_for_current_func (data, TEST_INSTRUMENTATION))
-    return;
 
-  if (per_file.warned_about_instrumentation)
+  if (skip_test_for_current_func (data, TEST_INSTRUMENTATION))
     return;
 
   int index = (*ptr == '-' ? 1 : 0);
 
-  if (ptr[index + 1] != 0 && ptr[index + 1] != ' ')
+  char * end;
+  uint value = strtoul (ptr + index, &end, 0);
+  
+  if (end == ptr + index)
     {
       maybe (data, TEST_INSTRUMENTATION, SOURCE_ANNOBIN_STRING_NOTES, "unexpected note value");
       einfo (VERBOSE, "debug: instrumentation note value: %s", ptr);
       return;
     }
 
-  einfo (INFO, "%s: WARN: %sInstrumentation enabled - this is probably a mistake for production binaries",
-	 get_filename (data),
-	 get_formatted_component_name ("(%s): "));
-
-  per_file.warned_about_instrumentation = true;
+  maybe (data, TEST_INSTRUMENTATION, SOURCE_ANNOBIN_STRING_NOTES,
+	 "instrumentation enabled - this is probably a mistake for production binaries");
 
   if (BE_VERBOSE)
     {
-      uint value      = strtod (ptr + index, NULL);
       uint sanitize   = ((value >> 12) & 0xf);
       uint instrument = ((value >> 8) & 0xf);
       uint profile    = ((value >> 4) & 0xf);
       uint arcs       = ((value) & 0xf);
-     
+
       einfo (VERBOSE, "%s: info: %sDetails: -fsanitize=...: %s",
 	     get_filename (data),
 	     get_formatted_component_name ("(%s): "),
@@ -7073,7 +7211,7 @@ check_annobin_pic_setting (annocheck_data *    data,
 static void
 check_annobin_plugin_name (annocheck_data *    data ATTRIBUTE_UNUSED,
 			   const char *        ptr ATTRIBUTE_UNUSED)
-{ 
+{
   /* FIXME: The plugin name is not currently used.  */
   return;
 }
@@ -7097,7 +7235,7 @@ check_annobin_stack_clash (annocheck_data *    data,
       skip (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_STRING_NOTES, "glibc binaries are not tested for stack clash protection");
       return;
     }
-  
+
   int index = (*ptr == '-' ? 1 : 0);
 
   if (ptr[index + 1] != 0 && ptr[index + 1] != ' ')
@@ -7110,8 +7248,10 @@ check_annobin_stack_clash (annocheck_data *    data,
   switch (ptr[index])
     {
     case '0':
-      if (is_riscv ())
-	skip (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_STRING_NOTES, "-fstack-clash-protection not used on RISC-V");
+      if (is_riscv ()
+	  && per_file.seen_tool_versions[TOOL_GCC] > 0
+	  && per_file.seen_tool_versions[TOOL_GCC] < 15)
+	skip (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_STRING_NOTES, "-fstack-clash-protection not enabled on RISC-V prior to gcc 15");
       else
 	fail (data, TEST_STACK_CLASH, SOURCE_ANNOBIN_STRING_NOTES, "compiled without -fstack-clash-protection");
       break;
@@ -7147,7 +7287,7 @@ check_annobin_short_enums (annocheck_data *    data,
 
   switch (ptr[index])
     {
-    case '0': 
+    case '0':
       state = SHORT_ENUM_STATE_LONG;
       goto check_state;
 
@@ -7180,7 +7320,7 @@ check_annobin_stack_protector (annocheck_data *    data,
       skip (data, TEST_STACK_PROT, SOURCE_ANNOBIN_STRING_NOTES, "glibc binaries are not tested for stack protection");
       return;
     }
-  
+
   int index = (*ptr == '-' ? 1 : 0);
 
   if (ptr[index + 1] != 0 && ptr[index + 1] != ' ')
@@ -7192,7 +7332,7 @@ check_annobin_stack_protector (annocheck_data *    data,
 
   switch (ptr[index])
     {
-    case '0': 
+    case '0':
       fail (data, TEST_STACK_PROT, SOURCE_ANNOBIN_STRING_NOTES, "stack protection not enabled");
       break;
 
@@ -7203,7 +7343,7 @@ check_annobin_stack_protector (annocheck_data *    data,
 
     case '2':
     case '3':
-      pass (data, TEST_STACK_PROT, SOURCE_ANNOBIN_STRING_NOTES, "compiled with -fstack-clash-protection");
+      pass (data, TEST_STACK_PROT, SOURCE_ANNOBIN_STRING_NOTES, "compiled with -fstack-protector-strong");
       break;
 
     default:
@@ -7231,7 +7371,7 @@ check_annobin_aarch64_bti (annocheck_data *    data,
 
   if (skip_test (TEST_BRANCH_PROTECTION) && skip_test (TEST_NOT_BRANCH_PROTECTION))
     return;
-  
+
   parse_aarch64_branch_protection_note (data, ptr, SOURCE_ANNOBIN_STRING_NOTES);
 }
 
@@ -7320,7 +7460,7 @@ static struct annobin_string_checker
   { ANNOBIN_STRING_X86_64_ABI,         check_annobin_x86_64_abi }
 };
 
-  
+
 static bool
 check_annobin_string_section (annocheck_data *    data,
 			      annocheck_section * sec)
@@ -7346,13 +7486,13 @@ check_annobin_string_section (annocheck_data *    data,
 	}
 
       const char * next_ptr;
-      
+
       /* Find the start of the next string.  */
       for (next_ptr = ptr; next_ptr < end; next_ptr ++)
 	if (* next_ptr == 0)
 	  break;
 
-      if (* next_ptr != 0)
+      if (next_ptr >= end)
 	{
 	  einfo (INFO, "ICE: unterminated string in annobin string notes");
 	  return false;
@@ -7374,7 +7514,7 @@ check_annobin_string_section (annocheck_data *    data,
 		if (! streq (space + 1, "/dev/null"))
 		  per_file.component_name = space + 1;
 	      }
-	      
+
 	    annobin_string_checkers[i].func (data, ptr);
 
 	    if (space != NULL)
@@ -7492,7 +7632,7 @@ check_dynamic_section (annocheck_data *    data,
 #if 0
   bool has_dt_gnu_hash = false;
 #endif
-  
+
   if (sec->shdr.sh_size == 0 || sec->shdr.sh_entsize == 0)
     {
       einfo (VERBOSE, "%s: WARN: Dynamic section %s is empty - ignoring", get_filename (data), sec->secname);
@@ -7528,9 +7668,6 @@ check_dynamic_section (annocheck_data *    data,
 	case DT_FLAGS:
 	  if (dyn->d_un.d_val & DF_BIND_NOW)
 	    pass (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "BIND_NOW dynamic flag seen");
-
-	  if (dyn->d_un.d_val & DF_1_INITFIRST)
-	    fail (data, TEST_RHIVOS, SOURCE_DYNAMIC_SECTION, "INITFIRST dynamic flag seen");
 	  break;
 
 	case DT_RELSZ:
@@ -7596,6 +7733,9 @@ check_dynamic_section (annocheck_data *    data,
 #ifdef DF_1_PIE
 	case DT_FLAGS_1:
 	  per_file.has_pie_flag = (dyn->d_un.d_val & DF_1_PIE) != 0;
+
+	  if (dyn->d_un.d_val & DF_1_INITFIRST)
+	    fail (data, TEST_RHIVOS, SOURCE_DYNAMIC_SECTION, "INITFIRST dynamic flag seen");
 	  break;
 #endif
 
@@ -7605,6 +7745,9 @@ check_dynamic_section (annocheck_data *    data,
 	  if (test_enabled (TEST_RHIVOS))
 	    {
 	      const char * soname = elf_strptr (data->elf, sec->shdr.sh_link, dyn->d_un.d_val);
+
+	      if (soname == NULL)
+		break;
 
 	      if (strchr (soname, '/'))
 		fail (data, TEST_RHIVOS, SOURCE_DYNAMIC_SECTION, "SONAME includes a directory separator character");
@@ -7620,6 +7763,7 @@ check_dynamic_section (annocheck_data *    data,
 
 	case DT_AUDIT:
 	  fail (data, TEST_RHIVOS, SOURCE_DYNAMIC_SECTION, "the DT_AUDIT dynamic tag is present");
+	  maybe (data, TEST_PRODUCTION, SOURCE_DYNAMIC_SECTION, "production binaries should not need audit libraries");
 	  break;
 
 	case DT_AUXILIARY:
@@ -7628,6 +7772,7 @@ check_dynamic_section (annocheck_data *    data,
 
 	case DT_DEPAUDIT:
 	  fail (data, TEST_RHIVOS, SOURCE_DYNAMIC_SECTION, "the DT_DEPAUDIT dynamic tag is present");
+	  maybe (data, TEST_PRODUCTION, SOURCE_DYNAMIC_SECTION, "production binaries should not depend upon audit libraries");
 	  break;
 
 	case DT_FILTER:
@@ -7658,7 +7803,7 @@ check_dynamic_section (annocheck_data *    data,
   if (has_dt_hash)
     fail (data, TEST_RHIVOS, SOURCE_DYNAMIC_SECTION, "RHIVOS does not support the use of the .hash section.  Please use --hash-style=gnu");
 #endif
-  
+
   if (dynamic_relocs_seen && ! already_passed (TEST_BIND_NOW))
     {
       if (! is_executable ())
@@ -7670,21 +7815,23 @@ check_dynamic_section (annocheck_data *    data,
 	skip (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "glibc binaries do not use bind-now");
       else if (is_special_gcc_binary (data))
 	skip (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "gcc binaries do not use bind-now");
+      else if (is_special_kernel_tool (data))
+	skip (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "kernel tools do not use bind-now");	
       else
 	fail (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "not linked with -Wl,-z,now");
     }
 
-  if (is_aarch64 ())
+  if (! uses_branch_protection ())
+    {
+      skip (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION,
+	    "no need to search for branch protection flags in the dynamic section");
+    }
+  else if (is_aarch64 ())
     {
       if (is_object_file ())
 	{
 	  skip (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "not used in object files");
 	  skip (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "not used in object files");
-	}
-      else if (RUST_compiler_seen () || GO_compiler_seen ())
-	{
-	  skip (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION,
-		"GO/Rust binaries do not set the BTI_PLT flag in the dynamic tags");
 	}
       else if (annocheck_has_separate_debuginfo_link (data->dwarf_info.dwarf))
 	{
@@ -7697,14 +7844,14 @@ check_dynamic_section (annocheck_data *    data,
 	  uint res = aarch64_bti_plt_seen ? 1 : 0;
 
 	  res += aarch64_pac_plt_seen ? 2 : 0;
-	  
+
 	  switch (res)
 	  {
 	  case 0:
 	    if (is_gcc_component (data))
 	      skip (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "some AArch64 GCC binaries are built without branch protection");
 	    else
-	      fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is missing from the dynamic tags");
+	      fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is missing from the dynamic tags (was -mbranch-protection=standard used when compiling ?)");
 	    pass (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT and PAC_PLT flags not in the dynamic tags");
 	    break;
 
@@ -7714,20 +7861,20 @@ check_dynamic_section (annocheck_data *    data,
 		future_fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the PAC_PLT flag is missing from dynamic tags");
 		pass (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is present in the dynamic tags");
 	      }
-	    maybe (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is present in the dynamic tags, but it is not supported by the OS");
+	    skip (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is present in the dynamic tags, but it is not supported by the OS");
 	    break;
 
 	  case 2:
 	    if (is_gcc_component (data))
 	      skip (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "some AArch64 GCC binaries are built without branch protection");
 	    else
-	      fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is missing from the dynamic tags");
-	    maybe (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the PAC_PLT flag is present in the dynamic tags, but it is not supported by the OS");
+	      fail (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI_PLT flag is missing from the dynamic tags (was -mbranch-protection=standard used when compiling ?)");
+	    skip (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the PAC_PLT flag is present in the dynamic tags, but it is not supported by the OS");
 	    break;
 
 	  case 3:
 	    pass (data, TEST_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "expected dynamic flags found");
-	    maybe (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI and PAC flags are present in the dynamic tags, but they are not supported by the OS");
+	    skip (data, TEST_NOT_DYNAMIC_TAGS, SOURCE_DYNAMIC_SECTION, "the BTI and PAC flags are present in the dynamic tags, but they are not supported by the OS");
 	    break;
 	  }
 	}
@@ -7803,7 +7950,7 @@ scan_rodata_section (annocheck_data *    data,
       if (memmem (sec->data->d_buf, sec->data->d_size, cgo_build, strlen (cgo_build)))
 	pass (data, TEST_FIPS, SOURCE_RODATA_SECTION, "the binary was built with CGO_ENABLED=1");
     }
-  
+
   if (per_file.current_tool == TOOL_UNKNOWN)
     {
       /* Look for a RUST compiler build version of the form rustc-<N>.<V>.<R>  */
@@ -7832,30 +7979,45 @@ scan_rodata_section (annocheck_data *    data,
   return true;
 }
 
+/* Scan for known producer strings in the .comment section.
+   Always returns TRUE, even if there was a problem as true means
+   "continue scanning the remaining sections" and not "something
+   went wrong".  */
+
 static bool
 check_comment_section (annocheck_data * data, annocheck_section * sec)
 {
+  if (sec == NULL
+      || sec->data == NULL
+      || sec->data->d_buf == NULL
+      || sec->data->d_size == 0)
+    return true;
+
   const char * tool = (const char *) sec->data->d_buf;
   const char * tool_end = tool + sec->data->d_size;
 
   if (tool[0] == 0)
-    tool ++; /* Not sure why this can happen, but it does.  */
+    {
+      tool ++; /* Not sure why this can happen, but it does.  */
+      if (tool >= tool_end)
+	return true;
+    }
 
   /* Note - it is possible to have multiple builder IDs in the .comment section.
      eg:  GCC: (GNU) 8.3.1 20191121 (Red Hat 8.3.1-5)\0GCC: (GNU) 9.2.1 20191120 (Red Hat 9.2.1-2).
      so we keep scanning until we do not find any more.  */
   while (tool < tool_end)
     {
-      static const char * gcc_prefix = "GCC: (GNU) ";
+      static const char * gcc_prefix   = "GCC: (GNU) ";
       static const char * clang_prefix = "clang version ";
-      static const char * lld_prefix = "Linker: LLD ";
+      static const char * lld_prefix   = "Linker: LLD ";
       uint version;
       const char * where;
 
       if ((where = strstr (tool, gcc_prefix)) != NULL)
 	{
 	  /* FIXME: This assumes that the gcc identifier looks like: "GCC: (GNU) 8.1.1""  */
-	  version = (uint) strtod (where + strlen (gcc_prefix), NULL);
+	  version = (uint) strtoul (where + strlen (gcc_prefix), NULL, 10);
 	  add_producer (data, TOOL_GCC, version, COMMENT_SECTION,
 			false, /* Just because we have seen a comment, this does not mean that there is any real compiled code.  */
 			true /* Update the current_tool field.  */);
@@ -7863,7 +8025,7 @@ check_comment_section (annocheck_data * data, annocheck_section * sec)
       else if ((where = strstr (tool, clang_prefix)) != NULL)
 	{
 	  /* FIXME: This assumes that the clang identifier looks like: "clang version 7.0.1""  */
-	  version = (uint) strtod (where + strlen (clang_prefix), NULL);
+	  version = (uint) strtoul (where + strlen (clang_prefix), NULL, 10);
 	  add_producer (data, TOOL_CLANG, version, COMMENT_SECTION,
 			false, /* No guarantee of real compiled code.  */
 			true); /* Update the current_tool field.  */
@@ -7914,7 +8076,7 @@ check_go_buildinfo_section (annocheck_data * data, annocheck_section * sec)
       uint revision;
 
       go_version += strlen (go_lead_in);
-	  
+
       if (sscanf (go_version, "%u.%u", & version, & revision) == 2)
 	{
 	  add_producer (data, TOOL_GO, version, SOURCE_GO_BUILDINFO,
@@ -8000,14 +8162,14 @@ contains_suspicious_characters (const unsigned char * name)
 
       if (c < 0xe0) /* Currently there are no 2-byte encoded unicode sequences
 		       that we need to worry about.  */
-	return false;
+	continue;
 
       if (c >= 0xf0) /* Nor are there any dangerous 4-byte unicode sequences.  */
 	{
 	  i += 2;
 	  if (i >= len) /* But of course if the bytes are not there then something is wrong.  */
 	    return true;
-	  return false;
+	  continue;
 	}
 
       /* We have encountered a UTF-8 encoded character that uses 3 bytes.
@@ -8119,6 +8281,9 @@ check_symbol_section (annocheck_data * data, annocheck_section * sec)
 
       const char * symname = elf_strptr (data->elf, sec->shdr.sh_link, sym.st_name);
 
+      if (symname == NULL)
+	continue;
+
       if (untested (TEST_STACK_PROT))
 	{
 	  /* FIXME: Do we need to check for ___stack_chk_guard as well ?  */
@@ -8129,15 +8294,19 @@ check_symbol_section (annocheck_data * data, annocheck_section * sec)
 	      Elf_Scn * sym_sec = elf_getscn (data->elf, sym.st_shndx);
 	      bool bad = false;
 
-	      if (data-> is_32bit)
+	      if (sym_sec == NULL)
+		;
+	      else if (data-> is_32bit)
 		{
 		  Elf32_Shdr * sym_sec_hdr = elf32_getshdr (sym_sec);
-		  bad = sym_sec_hdr->sh_flags & SHF_WRITE;
+		  if (sym_sec_hdr != NULL)
+		    bad = sym_sec_hdr->sh_flags & SHF_WRITE;
 		}
 	      else /* 64 bit ELF */
 		{
 		  Elf64_Shdr * sym_sec_hdr = elf64_getshdr (sym_sec);
-		  bad = sym_sec_hdr->sh_flags & SHF_WRITE;
+		  if (sym_sec_hdr != NULL)
+		    bad = sym_sec_hdr->sh_flags & SHF_WRITE;
 		}
 
 	      if (bad)
@@ -8234,14 +8403,20 @@ read_uleb128 (const unsigned char * data, unsigned int max, unsigned int * retur
     {
       unsigned char byte = * data ++;
 
-      result |= (byte & 0x7f) << shift;
+      if (shift < (sizeof (shift) * 8))
+	result |= (unsigned int)(byte & 0x7f) << shift;
+      else
+	{
+	  einfo (ERROR, "read_uleb128(): unable to execute a shift left of %u\n", shift);
+	  return 0;
+	}
       shift += 7;
       read += 1;
       if ((byte & 0x80) == 0)
 	break;
       else if (read == max)
 	{
-	  einfo (ERROR, "read_uleb128() ran out of bytes processing a ULEB128 encoded value\n");
+	  einfo (ERROR, "read_uleb128(): ran out of bytes processing a ULEB128 encoded value\n");
 	  return 0;
 	}
     }
@@ -8280,9 +8455,9 @@ check_aarch64_attributes (annocheck_data *     data,
 
   ++ buf;
   -- len;
-  
+
 #define MIN_AARCH64_ATTR_LEN 7  /* Minimum attribute length.  */
-  
+
   while (len >= MIN_AARCH64_ATTR_LEN)
     {
       unsigned int attribute_length = get_4byte_value (buf);
@@ -8319,7 +8494,7 @@ check_aarch64_attributes (annocheck_data *     data,
 
       /* Allow for the terminating NUL.  */
       attribute_name_len += 1;
-      
+
       /* Skip past the name.  */
       buf += attribute_name_len;
       len -= attribute_name_len;
@@ -8332,7 +8507,7 @@ check_aarch64_attributes (annocheck_data *     data,
 	  einfo (ERROR, "check_aarch64_attribute: unexpected value for optional byte: %u\n", * buf);
 	  return false;
 	}
-      
+
       buf += 1;
       len -= 1;
       attribute_length -= 1;
@@ -8362,7 +8537,7 @@ check_aarch64_attributes (annocheck_data *     data,
 	  buf += got;
 	  len -= got;
 	  attribute_length -= got;
-      
+
 	  got = read_uleb128 (buf, attribute_length, & val);
 	  if (got == 0)
 	    {
@@ -8372,22 +8547,28 @@ check_aarch64_attributes (annocheck_data *     data,
 	  buf += got;
 	  len -= got;
 	  attribute_length -= got;
-            
+
 	  switch (tag)
 	    {
 	    case 0 /* Tag_Feature_BTI */ :
 	      if (val == 0)
 		{
-		  if (already_passed (TEST_BRANCH_PROTECTION))
-		  /* This can happen when the binary has been compiled with branch
-		     protection enabled, but linked with system object files which
-		     do not have it enabled.  For now this is treated as a warning
-		     rather than a failure.  Once the system libraries catch up
-		     with branch protection labelling, it should be removed.  */
-		    warn (data, "ARM attributes section indicate that BTI is disabled");
+		  if (! uses_branch_protection ())
+		    skip (data, TEST_BRANCH_PROTECTION, SOURCE_ARM_ATTRIBUTES,
+			  "the .ARM.attributes section indicates that BTI is not enabled, but it is not needed");
+		  else if (is_gcc_component (data))
+		    skip (data, TEST_BRANCH_PROTECTION, SOURCE_ARM_ATTRIBUTES,
+			  "some gcc binaries are deliberately built without branch protection");
+		  else if (already_passed (TEST_BRANCH_PROTECTION))
+		    /* This can happen when the binary has been compiled with branch
+		       protection enabled, but linked with system object files which
+		       do not have it enabled.  For now this is treated as a warning
+		       rather than a failure.  Once the system libraries catch up
+		       with branch protection labelling, it should be removed.  */
+		    warn (data, "the .ARM.attributes section indicate that BTI is disabled, but other sources indicate that it is enabled");
 		  else
 		    fail (data, TEST_BRANCH_PROTECTION, SOURCE_ARM_ATTRIBUTES,
-			  "ARM attributes section indicate that BTI is disabled");
+			  "the .ARM.attributes section indicates that BTI is disabled");
 		}
 	      else
 		pass (data, TEST_BRANCH_PROTECTION, SOURCE_ARM_ATTRIBUTES,
@@ -8684,7 +8865,7 @@ interesting_seg (annocheck_data *    data,
 	  bigseg *= 1024L;
 	  bigseg *= 1024L;
 	  bigseg *= 1024L;
-	  
+
 	  if (! skip_test (TEST_RHIVOS) && seg->phdr->p_memsz > bigseg)
 	    {
 	      fail (data, TEST_RHIVOS, SOURCE_SEGMENT_HEADERS, "LOAD segment larger than 2GiB seen");
@@ -8906,6 +9087,8 @@ ignore_gap (annocheck_data * data, note_range * gap)
       while ((scn = elf_nextscn (data->elf, scn)) != NULL)
 	{
 	  Elf32_Shdr * shdr = elf32_getshdr (scn);
+	  if (shdr == NULL)
+	    continue;
 	  ulong sec_end = shdr->sh_addr + shdr->sh_size;
 
 	  /* We are only interested in code sections.  */
@@ -8926,11 +9109,13 @@ ignore_gap (annocheck_data * data, note_range * gap)
 	      else
 		{
 		  /* FIXME: Which section should we select ?  */
+		  const Elf32_Shdr * addr1 = elf32_getshdr (addr1_scn);
+
 		  einfo (VERBOSE2, "%s: multiple code sections (%x+%x vs %x+%x) contain gap start",
 			 get_filename (data),
 			 shdr->sh_addr, shdr->sh_size,
-			 elf32_getshdr (addr1_scn)->sh_addr,
-			 elf32_getshdr (addr1_scn)->sh_size
+			 addr1 ? addr1->sh_addr : 0,
+			 addr1 ? addr1->sh_size : 0
 			 );
 		}
 	    }
@@ -8943,7 +9128,7 @@ ignore_gap (annocheck_data * data, note_range * gap)
 	      else
 		{
 		  /* FIXME: Which section should we select ?  */
-		  const Elf64_Shdr * addr1 = elf64_getshdr (addr1_scn);
+		  const Elf32_Shdr * addr1 = elf32_getshdr (addr1_scn);
 
  		  einfo (VERBOSE2, "%s: multiple code sections (%lx+%lx vs %lx+%lx) contain gap end",
 			 get_filename (data),
@@ -8973,6 +9158,8 @@ ignore_gap (annocheck_data * data, note_range * gap)
       while ((scn = elf_nextscn (data->elf, scn)) != NULL)
 	{
 	  Elf64_Shdr * shdr = elf64_getshdr (scn);
+	  if (shdr == NULL)
+	    continue;
 	  ulong sec_end = shdr->sh_addr + shdr->sh_size;
 
 	  /* We are only interested in code sections.  */
@@ -8993,12 +9180,14 @@ ignore_gap (annocheck_data * data, note_range * gap)
 	      else
 		{
 		  /* FIXME: Which section should we select ?  */
+		  const Elf64_Shdr * addr1 = elf64_getshdr (addr1_scn);
+
 		  einfo (VERBOSE2, "%s: multiple code sections (%lx+%lx vs %lx+%lx) contain gap start",
 			 get_filename (data),
 			 (unsigned long) shdr->sh_addr,
 			 (unsigned long) shdr->sh_size,
-			 (unsigned long) elf64_getshdr (addr1_scn)->sh_addr,
-			 (unsigned long) elf64_getshdr (addr1_scn)->sh_size
+			 (unsigned long) (addr1 ? addr1->sh_addr : 0),
+			 (unsigned long) (addr1 ? addr1->sh_size : 0)
 			 );
 		}
 	    }
@@ -9011,12 +9200,14 @@ ignore_gap (annocheck_data * data, note_range * gap)
 	      else
 		{
 		  /* FIXME: Which section should we select ?  */
+		  const Elf64_Shdr * addr1 = elf64_getshdr (addr1_scn);
+
 		  einfo (VERBOSE2, "%s: multiple code sections (%lx+%lx vs %lx+%lx) contain gap end",
 			 get_filename (data),
 			 (unsigned long) shdr->sh_addr,
 			 (unsigned long) shdr->sh_size,
-			 (unsigned long) elf64_getshdr (addr1_scn)->sh_addr,
-			 (unsigned long) elf64_getshdr (addr1_scn)->sh_size);
+			 (unsigned long) (addr1 ? addr1->sh_addr : 0),
+			 (unsigned long) (addr1 ? addr1->sh_size : 0));
 		}
 	    }
 	  else if (shdr->sh_addr == gap->end)
@@ -9382,6 +9573,8 @@ sort_ranges (annocheck_data * data)
 	    {
 	      einfo (VERBOSE2, "%s: info: ignore gap (%#lx..%#lx) because code in %s is compiled without annotation",
 		     get_filename (data), gap.start, gap.end, first_sym);
+	      free ((char *) first_sym);
+	      first_sym = NULL;
 	      continue;
 	    }
 
@@ -9645,7 +9838,7 @@ warn_about_missing_notes (annocheck_data * data, uint i)
   if (! per_file.build_notes_seen && ! per_file.build_string_notes_seen)
     warn (data, " no annnobin notes were found - could they be in a separate file ?");
   else if (per_file.gaps_seen)
-    warn (data, " possibly because of gaps found in the notes ?");		  
+    warn (data, " possibly because of gaps found in the notes ?");
 }
 
 static struct result_counters
@@ -9727,7 +9920,8 @@ finish (annocheck_data * data)
 
   bool exception_for_gcc = is_gcc_component (data);
   bool exception_for_glibc = is_special_glibc_binary (data);
-    
+  bool exception_for_clang = is_clang_component (data);
+
   if (! per_file.build_notes_seen
       && ! per_file.build_string_notes_seen
       && test_enabled (TEST_NOTES))
@@ -9745,7 +9939,7 @@ finish (annocheck_data * data)
 
 	  if (RUST_compiler_seen ())
 	    skip (data, TEST_NOTES, SOURCE_FINAL_SCAN, "RUST compiler does not generate annobin notes");
-	  if (LLVM_compiler_seen ())
+	  else if (LLVM_compiler_seen ())
 	    skip (data, TEST_NOTES, SOURCE_FINAL_SCAN, "LLVM compiler does not generate annobin notes");
 	  else if (does_not_contain_code ())
 	    skip (data, TEST_NOTES, SOURCE_FINAL_SCAN, "no code detected, therefore no need for annobin notes");
@@ -9856,7 +10050,7 @@ finish (annocheck_data * data)
 	      if (is_kernel_module (data))
 		skip (data, i, SOURCE_FINAL_SCAN, "kernel modules do not need a GNU type stack section");
 	      else if (is_grub_module (data))
-		skip (data, i, SOURCE_FINAL_SCAN, "grub modules do not need a GNU type stack section");		
+		skip (data, i, SOURCE_FINAL_SCAN, "grub modules do not need a GNU type stack section");
 	      else if (per_file.e_machine == EM_BPF)
 		skip (data, i, SOURCE_FINAL_SCAN, "BPF binaries are special");
 	      else if (per_file.e_machine == EM_AMDGPU)
@@ -9886,7 +10080,9 @@ finish (annocheck_data * data)
 	      else if (ADA_compiler_seen ())
 		skip (data, TEST_PIE, SOURCE_FINAL_SCAN, "ADA does not support PIE");
 	      else if (is_special_gcc_binary (data))
-		skip (data, TEST_BIND_NOW, SOURCE_DYNAMIC_SECTION, "gcc binaries are built without PIE");
+		skip (data, TEST_PIE, SOURCE_FINAL_SCAN, "gcc binaries are built without PIE");
+	      else if (is_special_kernel_tool (data))
+		skip (data, TEST_PIE, SOURCE_FINAL_SCAN, "kernel tools are built without PIE");
 	      else
 		fail (data, TEST_PIE, SOURCE_FINAL_SCAN, "not built with '-Wl,-pie'");
 	      break;
@@ -9928,16 +10124,8 @@ finish (annocheck_data * data)
 		{
 		  if (per_file.seen_aarch64_property_note)
 		    skip (data, i, SOURCE_FINAL_SCAN, "an AArch64 property note eliminates the need for dynamic tags");
-		  else if (GO_compiler_seen ())
-		    skip (data, i, SOURCE_FINAL_SCAN, "GO compilation does not support branch protection");
-		  else if (RUST_compiler_seen ())
-		    {
-		      if (C_compiler_seen ())
-			/* FIXME - should this be a future fail ?  */
-			skip (data, i, SOURCE_FINAL_SCAN, "mixed Rust and C code - branch protection is needed but not yet supported by Rust");
-		      else
-			skip (data, i, SOURCE_FINAL_SCAN, "Rust compilation does not support branch protection");
-		    }
+		  else if (! uses_branch_protection ())
+		    skip (data, i, SOURCE_FINAL_SCAN, "flags in the dynamic section are not needed");
 		  else if (exception_for_gcc)
 		    skip (data, i, SOURCE_FINAL_SCAN, "some gcc binaries do not support branch protection");
 		  else if (! test_enabled (TEST_PROPERTY_NOTE))
@@ -9960,7 +10148,9 @@ finish (annocheck_data * data)
 	      else if (exception_for_glibc)
 		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries not compiled with LTO");
 	      else if (exception_for_gcc)
-		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
+		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries are built without LTO");
+	      else if (exception_for_clang)
+		skip (data, i, SOURCE_FINAL_SCAN, "clang static libraries are built without LTO");
 	      else if (C_compiler_used ())
 		maybe (data, i, SOURCE_FINAL_SCAN, "source code is C/C++ but if -flto was used, it was not recorded");
 	      else if (RUST_compiler_seen ())
@@ -10006,12 +10196,14 @@ finish (annocheck_data * data)
 	      else if (per_file.warned_dw_at_producer)
 		skip (data, i, SOURCE_FINAL_SCAN, "could not check the DWARF DW_AT_producer string");
 	      else if (per_file.seen_bad_dw_at_producer && LLVM_compiler_seen ())
-		skip (data, i, SOURCE_FINAL_SCAN, "could not parse LLVM produced DWARF DW_AT_producer string");		
+		skip (data, i, SOURCE_FINAL_SCAN, "could not parse LLVM produced DWARF DW_AT_producer string");
 	      else if (exception_for_gcc)
 		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
+	      else if (is_special_kernel_tool (data))
+		skip (data, i, SOURCE_FINAL_SCAN, "kernel tools can be built without -Wall");
 	      else if (C_compiler_used ())
 		maybe_fail (data, i, SOURCE_FINAL_SCAN, "no indication that the necessary option was used (and a C compiler was detected)");
-	      else if (assembler_seen ())	
+	      else if (assembler_seen ())
 		warn_about_assembler_source (data, i);
 	      else
 		skip (data, i, SOURCE_FINAL_SCAN, "no compiled C/C++ code found");
@@ -10029,7 +10221,12 @@ finish (annocheck_data * data)
 	      else if (is_comboot_module (data))
 		skip (data, i, SOURCE_FINAL_SCAN, "COMBOOT modules are not compiled as PIC code");
 	      else if (C_compiler_used ())
-		fail (data, i, SOURCE_FINAL_SCAN, "no indication that -fPIC was used");
+		{
+		  if (LLVM_compiler_used ())
+		    skip (data, i, SOURCE_FINAL_SCAN, "Annobin plugin is not currently required for LLVM compilers");
+		  else
+		    fail (data, i, SOURCE_FINAL_SCAN, "no indication that -fPIC was used");
+		}
 	      else if (! per_file.build_notes_seen && ! per_file.build_string_notes_seen)
 		maybe (data, i, SOURCE_FINAL_SCAN, "no valid notes found regarding this test");
 	      else if (RUST_compiler_seen ())
@@ -10046,7 +10243,7 @@ finish (annocheck_data * data)
 	      if (GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "GO is stack safe");
 	      else if (LLVM_compiler_used ())
-		skip (data, i, SOURCE_FINAL_SCAN, "sanitize_safe_stack is not currently required for LLVM compilation");
+		skip (data, i, SOURCE_FINAL_SCAN, "Annobin plugin is not currently required for LLVM compilers");
 	      else if (is_arm ())
 		skip (data, i, SOURCE_FINAL_SCAN, "ARM binaries are built without annobin annotation");
 	      else if (per_file.lto_used)
@@ -10061,6 +10258,8 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
 	      else if (is_comboot_module (data))
 		skip (data, i, SOURCE_FINAL_SCAN, "COMBOOT modules do not use stack protection");
+	      else if (! GCC_compiler_used () && LLVM_compiler_seen ())
+		skip (data, i, SOURCE_FINAL_SCAN, "no notes have been found.  Annobin plugin is not currently required for LLVM compilers");
 	      else if (C_compiler_seen ())
 		warn_about_missing_notes (data, i);
 	      else if (per_file.warned_dw_at_producer)
@@ -10083,7 +10282,7 @@ finish (annocheck_data * data)
 	      else
 		warn_about_missing_notes (data, i);
 	      break;
-	      
+
 	    case TEST_FLEX_ARRAYS:
 	    case TEST_AUTO_VAR_INIT:
 	    case TEST_ZERO_CALL_USED_REGS:
@@ -10101,7 +10300,14 @@ finish (annocheck_data * data)
 	      else if (is_comboot_module (data))
 		skip (data, i, SOURCE_FINAL_SCAN, "COMBOOT modules do not have annobin data or debug information");
 	      else if (C_compiler_seen ())
-		warn_about_missing_notes (data, i);
+		{
+		  if (LLVM_compiler_used ())
+		    skip (data, i, SOURCE_FINAL_SCAN, "Annobin plugin is not currently required for LLVM compilers");
+		  else if (! GCC_compiler_used () && LLVM_compiler_seen ())
+		    skip (data, i, SOURCE_FINAL_SCAN, "no notes have been found.  Annobin plugin is not currently required for LLVM compilers");
+		  else
+		    warn_about_missing_notes (data, i);
+		}
 	      else if (per_file.warned_dw_at_producer)
 		skip (data, i, SOURCE_FINAL_SCAN, "could not check for options in the DWARF DW_AT_producer string");
 	      else if (assembler_seen ())
@@ -10113,8 +10319,10 @@ finish (annocheck_data * data)
 	    case TEST_STACK_CLASH:
 	      if (is_arm ())
 		skip (data, i, SOURCE_FINAL_SCAN, "not supported on ARM architectures");
-	      else if (is_riscv ())
-		skip (data, i, SOURCE_FINAL_SCAN, "not used on RISC-V architecture");
+	      else if (is_riscv ()
+		       && per_file.seen_tool_versions[TOOL_GCC] > 0
+		       && per_file.seen_tool_versions[TOOL_GCC] < 15)
+		skip (data, i, SOURCE_FINAL_SCAN, "not supported on RISC-V architecture prior to gcc-15");
 	      else if (does_not_contain_code ())
 		skip (data, i, SOURCE_FINAL_SCAN, "no code present - therefore no stack protection needed");
 	      else if (GO_compiler_seen ())
@@ -10130,11 +10338,15 @@ finish (annocheck_data * data)
 	      else if (RUST_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "Rust binaries do not need stack clash protection");
 	      else if (is_comboot_module (data))
-		skip (data, i, SOURCE_FINAL_SCAN, "COMBOOT modules do not use stack clash protection");	      
+		skip (data, i, SOURCE_FINAL_SCAN, "COMBOOT modules do not use stack clash protection");
 	      else if (C_compiler_seen ())
 		{
 		  if (exception_for_gcc)
 		    skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
+		  else if (LLVM_compiler_used ())
+		    skip (data, i, SOURCE_FINAL_SCAN, "Annobin plugin is not currently required for LLVM compilers");
+		  else if (! GCC_compiler_used () && LLVM_compiler_seen ())
+		    skip (data, i, SOURCE_FINAL_SCAN, "no notes have been found.  Annobin plugin is not currently required for LLVM compilers");
 		  else if (GCC_compiler_seen ())
 		    warn_about_missing_notes (data, i);
 		  else
@@ -10144,8 +10356,8 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "could not check for options in the DWARF DW_AT_producer string");
 	      else if (assembler_seen ())
 		warn_about_assembler_source (data, i);
-	      /* Some of GCC's static libraries contain assembler sourced object files that
-		 are built without annotation or debug info.  Catch these here.  */
+	      /* Some of GCC's static libraries contain assembler sourced object files
+		 that are built without annotation or debug info.  Catch these here.  */
 	      else if (is_gcc_assembler_source (data))
 		skip (data, i, SOURCE_FINAL_SCAN, "gcc support file assembled without notes or debuginfo");
 	      else
@@ -10160,6 +10372,8 @@ finish (annocheck_data * data)
 		skip (data, i, SOURCE_FINAL_SCAN, "property notes in object files are not tested");
 	      else if (GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "property notes not needed for GO binaries");
+	      else if (is_special_kernel_tool (data))
+		skip (data, i, SOURCE_FINAL_SCAN, "kernel tools do not have property notes");	      
 	      else if (RUST_compiler_seen ())
 		{
 		  if (C_compiler_seen ())
@@ -10168,6 +10382,10 @@ finish (annocheck_data * data)
 		  else
 		    skip (data, i, SOURCE_FINAL_SCAN, "property notes are not currently supported by Rust binaries");
 		}
+	      else if (LLVM_compiler_used ())
+		skip (data, i, SOURCE_FINAL_SCAN, "Annobin plugin is not currently required for LLVM compilers");
+	      else if (! GCC_compiler_used () && LLVM_compiler_seen ())
+		skip (data, i, SOURCE_FINAL_SCAN, "no notes have been found.  The Annobin plugin is not currently required for LLVM compilers");
 	      else if (is_aarch64 ())
 		{
 		  if (test_enabled (TEST_BRANCH_PROTECTION))
@@ -10227,9 +10445,13 @@ finish (annocheck_data * data)
 		}
 	      else if (LLVM_compiler_used ())
 		skip (data, i, SOURCE_FINAL_SCAN, "sanitize_cfi is not currently required for LLVM compilation");
+	      else if (is_special_kernel_tool (data))
+		skip (data, i, SOURCE_FINAL_SCAN, "kernel tools do not use control flow protection");	
 	      else if (test_enabled (TEST_PROPERTY_NOTE))
 		{
-		  if (untested (TEST_PROPERTY_NOTE))
+		  if (! GCC_compiler_used () && LLVM_compiler_seen ())
+		    skip (data, i, SOURCE_FINAL_SCAN, "no notes have been found. The Annobin plugin is not currently required for LLVM compilers");
+		  else if(untested (TEST_PROPERTY_NOTE))
 		    fail (data, i, SOURCE_FINAL_SCAN, "no .note.gnu.property section = no control flow information");
 		  else if (! already_passed (TEST_PROPERTY_NOTE))
 		    fail (data, i, SOURCE_FINAL_SCAN, ".note.gnu.property section did not contain the expected notes");
@@ -10252,7 +10474,7 @@ finish (annocheck_data * data)
 	      else if (per_file.lto_used)
 		skip (data, i, SOURCE_FINAL_SCAN, "compiling in LTO mode hides the -mstackrealign option");
 	      else if (exception_for_glibc)
-		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries do not need/use stack clash protection");
+		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries do not need/use stack realignment");
 	      else if (exception_for_gcc)
 		skip (data, i, SOURCE_FINAL_SCAN, "gcc static libraries do not have annobin data or debug information");
 	      else
@@ -10268,7 +10490,7 @@ finish (annocheck_data * data)
 	      else if (GO_compiler_seen ())
 		skip (data, i, SOURCE_FINAL_SCAN, "GO binaries do not support branch protection");
 	      else if (exception_for_glibc)
-		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries do not need/use stack clash protection");
+		skip (data, i, SOURCE_FINAL_SCAN, "glibc binaries do not need/use branch protection");
 	      else if (! per_file.has_dwarf)
 		skip (data, i, SOURCE_FINAL_SCAN, "could not check for options in the DWARF DW_AT_producer string");
 	      else if (per_file.warned_dw_at_producer)
@@ -10285,10 +10507,8 @@ finish (annocheck_data * data)
 		    pass (data, i, SOURCE_FINAL_SCAN, "-mbranch-protection has been used correctly");
 		  else if (exception_for_gcc)
 		    skip (data, i, SOURCE_FINAL_SCAN, "some gcc files are built without branch protection");
-		  else if (i == TEST_BRANCH_PROTECTION)
-		    fail (data, i, SOURCE_FINAL_SCAN, "the -mbranch-protection option was not used");
 		  else
-		    skip (data, i, SOURCE_FINAL_SCAN, "no branch protection was requested");
+		    fail (data, i, SOURCE_FINAL_SCAN, "the -mbranch-protection option was not used");
 		}
 	      else
 		{
@@ -10339,7 +10559,7 @@ finish (annocheck_data * data)
     results.maybes++;
   else
     results.passes++;
-  
+
  /* FIXME: Add an option to ignore MAYBE results ? */
   if (per_file.num_fails > 0 || per_file.num_maybes > 0)
     {
@@ -10353,7 +10573,7 @@ finish (annocheck_data * data)
 
       if (is_rhel_10 () && is_i686 ())
 	{
-	  einfo (PREFIXED, "%s: Overall: SKIP (because i686 is not supported on RHEL-10",
+	  einfo (PREFIXED, "%s: Overall: SKIP (because i686 is not supported on RHEL-10)",
 		 get_filename (data));
 	  return true;
 	}
@@ -10370,7 +10590,7 @@ finish (annocheck_data * data)
     {
       if (BE_VERBOSE)
 	einfo (PREFIXED, "%s: Overall: PASS", get_filename (data));
-      else 
+      else
 	einfo (PREFIXED, "%s: PASS", get_filename (data));
     }
 
@@ -10451,8 +10671,8 @@ usage (void)
   einfo (INFO, "   and (if running in verbose mode) \"<file name> PASS: <test name> for individual tests that pass");
   einfo (INFO, "  This can be unhelpful if lots of binaries are being tested and only the failures are interesting");
   einfo (INFO, "  So the PASS lines can be controlled by:");
-  einfo (INFO, "    --skip-passes             Display PASS results (default)");
-  einfo (INFO, "    --no-skip-passes          Do not display PASS results for individual tests or in the summary");
+  einfo (INFO, "    --skip-passes             Do not display PASS results for individual tests or in the summary");
+  einfo (INFO, "    --no-skip-passes          Display PASS results (default)");
 
   einfo (INFO, "  By default the tool will show cumulative results when examining more than one binary");
   einfo (INFO, "  This can be controlled by:");
@@ -10463,12 +10683,12 @@ usage (void)
   einfo (INFO, "  This can be controlled by:");
   einfo (INFO, "    --allow-exceptions        Allow special cases to skip certain tests (default)");
   einfo (INFO, "    --no-allow-exceptions     Do not allow special cases to skip tests");
-  
+
   einfo (INFO, "  By default the tool will warn if it encounters notes made by a\n");
-  einfo (INFO, "  plugin not built for the version of the compiler being used."); 
+  einfo (INFO, "  plugin not built for the version of the compiler being used.");
   einfo (INFO, "  This can be changed with:");
   einfo (INFO, "     --suppress-version-warnings  Stop warnings about version mismatches");
-  
+
   einfo (INFO, "  Annobin's online documentation includes an extended description of the tests");
   einfo (INFO, "  When a FAIL or MAYB result is displayed a URL to online description is also provided");
   einfo (INFO, "  (In fixed-format mode this does not happen)");
@@ -10494,7 +10714,7 @@ disable_test (enum test_index t)
   tests[t].enabled = false;
   tests[t].set_by_user = true;
 }
-	     
+
 static void
 enable_test (enum test_index t)
 {
@@ -10516,7 +10736,7 @@ enable_test (enum test_index t)
   if (t == TEST_DYNAMIC_TAGS)
     disable_test (TEST_NOT_DYNAMIC_TAGS);
 }
-	     
+
 static bool
 process_arg (const char *   arg,
 	     const char **  argv ATTRIBUTE_UNUSED,
@@ -10565,7 +10785,7 @@ process_arg (const char *   arg,
 	  for (i = 0; i < TEST_MAX; i++)
 	    if (tests[i].future)
 	      disable_test (i);
-	  
+
 	  return true;
 	}
 
@@ -10575,7 +10795,7 @@ process_arg (const char *   arg,
 	  disable_test (TEST_LOAD_SEGMENTS);
 	  return true;
 	}
-	    
+
       if ((funcname = strchr (arg, '=')) != NULL)
 	{
 	  ++ funcname;
@@ -10636,7 +10856,7 @@ process_arg (const char *   arg,
 	  for (i = 0; i < TEST_MAX; i++)
 	    if (tests[i].future)
 	      enable_test (i);
-	  
+
 	  return true;
 	}
 
@@ -10646,7 +10866,7 @@ process_arg (const char *   arg,
 	  enable_test (TEST_LOAD_SEGMENTS);
 	  return true;
 	}
-	    
+
       if (streq (arg, "rhivos"))
 	{
 	  /* Make sure that some of the other tests are also enabled.  */
@@ -10693,13 +10913,13 @@ process_arg (const char *   arg,
       enable_future_tests = true;
       return true;
     }
-					
+
   if (startswith (arg, "disable-future"))
     {
       enable_future_tests = false;
       return true;
     }
-					
+
   if (streq (arg, "enable-hardened") || streq (arg, "enable"))
     {
       disabled = false;
@@ -10770,14 +10990,14 @@ process_arg (const char *   arg,
     {
       provide_url.option_value = true;
       provide_url.option_set = true;
-      return true;	
+      return true;
     }
 
   if (streq (arg, "no-urls"))
     {
       provide_url.option_value = false;
       provide_url.option_set = true;
-      return true;	
+      return true;
     }
 
   if (streq (arg, "full-filenames") || streq (arg, "full-filename"))
@@ -10813,7 +11033,7 @@ process_arg (const char *   arg,
 
       if (*arg)
 	++arg;
-      
+
       if (*arg == 0)
 	;
       else if (streq (arg, "none"))
@@ -10870,7 +11090,7 @@ annobin_end_scan (uint level, const char * datafile)
   // scroll off the top of the screen.  So provide a summary for the user.
   if (level > 0 && results.total > 1)
     {
-      if (skip_passes 
+      if (skip_passes
 	  && results.maybes == 0
 	  && results.fails == 0)
 	;
@@ -11109,6 +11329,8 @@ libannocheck_reinit (libannocheck_internals_ptr handle,
 
   if (debugpath)
     handle->debugpath = strdup (debugpath);
+  else
+    handle->debugpath = NULL;
 
   cached_reason = NULL;
 
@@ -11379,7 +11601,12 @@ libannocheck_run_tests (libannocheck_internals_ptr  handle,
       && per_file.num_skip == 0
       && per_file.num_fails == 0
       && per_file.num_maybes == 0)
-    return set_error (libannocheck_error_file_corrupt, "unable to process file");
+    {
+      if (handle->debugpath)
+	annocheck_set_debug_file (NULL);
+
+      return set_error (libannocheck_error_file_corrupt, "unable to process file");
+    }
 
   * num_fail_return = per_file.num_fails;
   * num_mayb_return = per_file.num_maybes;

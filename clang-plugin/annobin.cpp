@@ -22,87 +22,25 @@
 #include "llvm/Support/raw_ostream.h"
 #include "clang/Basic/Version.h"
 #include "clang/Basic/TargetInfo.h"
+#include "AnnobinLLVMCommon.h"
 
 using namespace std;
 using namespace clang;
 using namespace llvm;
+using namespace AnnobinLLVMCommon;
 
 #include "annobin-global.h"
 #include "annobin-common.h"
+#include <algorithm>
 #include <cstring>
 #include <cctype>
 #include <cstdarg>
-#include <iomanip>
 #include <sstream>
-#include <sys/time.h>
-
-#define XSTR(S) STR(S)
-#define STR(S)  #S
 
 namespace
 {
   static const unsigned int   annobin_version = (unsigned int) (ANNOBIN_VERSION * 100);
-  bool                        be_verbose = false;
   bool                        enabled = true;
-  /* True if the symbols used to map addresses to file names should be global.
-     On some architectures these symbols have to be global so that they will
-     be preserved in object files.  But doing so can prevent the build-id
-     mechanism from working, since the symbols contain build-date information.  */
-  bool                        global_file_name_symbols = false;
-
-  // Helper functions used throughout this file.
-  template<class... Tys>
-  char *
-  concat (Tys const&... args)
-  {
-    std::ostringstream oss;
-
-    (void) std::initializer_list<int>{((oss << args), 1)...};
-    return strdup (oss.str().c_str());
-  }
-
-  static inline void
-  inform (char const fmt[], ...)
-  {
-    va_list args;
-
-    va_start (args, fmt);
-    fflush (stdout);
-    fprintf (stderr, "Annobin: ");
-    vfprintf (stderr, fmt, args);
-    fputc ('\n', stderr);
-    va_end (args);
-  }
-
-  static inline void
-  verbose (char const fmt[], ...)
-  {
-    if (! be_verbose)
-      return;
-
-    va_list args;
-
-    va_start (args, fmt);
-    fflush (stdout);
-    fprintf (stderr, "Annobin: ");
-    vfprintf (stderr, fmt, args);
-    fputc ('\n', stderr);
-    va_end (args);
-  }
-
-  static inline void
-  ice (char const fmt[], ...)
-  {
-    va_list args;
-
-    va_start (args, fmt);
-    fflush (stdout);
-    fprintf (stderr, "Annobin: Internal Error: ");
-    vfprintf (stderr, fmt , args);
-    fputc ('\n', stderr);
-    va_end (args);
-    exit (EXIT_FAILURE);
-  }
 
   class AnnobinConsumer : public ASTConsumer
   {
@@ -117,12 +55,10 @@ private:
     AnnobinConsumer (CompilerInstance & CI) : CI (CI)
     {
     }
-    
+
     void
     HandleTranslationUnit (ASTContext & Context) override
     {
-      static char buf [6400];  // FIXME: Use a dynmically allocated buffer.
-
 #if CLANG_VERSION_MAJOR > 15
       is_32bit = Context.getTargetInfo().getPointerWidth(LangAS::Default) == 32;
 #else
@@ -130,60 +66,37 @@ private:
 #endif
 
       SourceManager & src = Context.getSourceManager ();
-      std::string filename = src.getFilename (src.getLocForStartOfFile (src.getMainFileID ())).str ().c_str ();
+      std::string filename = src.getFilename (src.getLocForStartOfFile (src.getMainFileID ())).str ();
 
-      convert_to_valid_symbol_name (filename);
+      validSymbolName (filename);
       verbose ("Generate start and end symbols based on: %s", filename.c_str());
       annobin_current_file_start = concat ("_annobin_", filename, "_start");
       annobin_current_file_end   = concat ("_annobin_", filename, "_end");
 
-      // Generate start and end symbols.
-      //
-      // Note - we put the end symbol in a section called .text.zzz.
-      // The hope is that that this section will be the last section allocated
-      // to the .text section when the final link is made.  In that way we can
-      // ensure that the note range will be from wherever the start symbol below
-      // ends up in the final image to the end of the .text section in that image.
-      // This does mean however that if more than one compilation unit is
-      // linked together then the note ranges will overlap.
-      //
-      // The benefit of this approach is that if the linker discards any text
-      // sections (eg because garbage collection is enabled, or linkonce is being
-      // used), the note ranges will still be valid and there will no gaps.
-      //
-      // FIXME: This scheme fails if the user creates code sections that do not
-      // start with .text. or which sort alphabetically after .text.zz.
-      static const char START_TEXT[] = "\
-\t.pushsection .text\n\
-\t.hidden %s\n\
-\t.type   %s, STT_NOTYPE\n\
-\t.equiv  %s, .text + %d\n\
-\t.size   %s, 0\n\
-\t.pushsection .text.zzz\n\
-\t.hidden %s\n\
-\t.type   %s, STT_NOTYPE\n\
-\t.equiv  %s, .text.zzz\n\
-\t.size   %s, 0\n\
-\t.popsection\n";
-      sprintf (buf, START_TEXT,
-	       annobin_current_file_start, annobin_current_file_start, annobin_current_file_start,
-	       target_start_sym_bias, annobin_current_file_start,
-	       annobin_current_file_end, annobin_current_file_end, annobin_current_file_end, annobin_current_file_end);
+      std::string start_end_asm = generateStartEndSymbols (annobin_current_file_start,
+							   annobin_current_file_end,
+							   target_start_sym_bias);
+      AddAsmText (Context, start_end_asm);
 
-      AddAsmText (Context, buf);
-
-      sprintf (buf, "%d%c%u", 3 /* SPEC_VERSION */, ANNOBIN_TOOL_ID_CLANG, annobin_version);
+      /* Note we leave the SPEC VERSION field as 3 because tools like readelf
+	 expect this version of the ELF NOTE format of annobin data.  */
+      std::ostringstream note_buf;
+      note_buf << "3" << ANNOBIN_TOOL_ID_CLANG << annobin_version;
       OutputStringNote (Context,
-			GNU_BUILD_ATTRIBUTE_VERSION, buf,
+			GNU_BUILD_ATTRIBUTE_VERSION, note_buf.str ().c_str (),
 			"version note");
 
-      sprintf (buf, "running on %s", getClangFullVersion ().c_str ());
+      note_buf.str ("");
+      note_buf.clear ();
+      note_buf << "running on " << getClangFullVersion ();
       OutputStringNote (Context, GNU_BUILD_ATTRIBUTE_TOOL,
-			buf, "tool note (running on)");
-			
-      sprintf (buf, "annobin built by clang version %s", CLANG_VERSION_STRING);
+			note_buf.str ().c_str (), "tool note (running on)");
+
+      note_buf.str ("");
+      note_buf.clear ();
+      note_buf << "annobin built by clang version " << CLANG_VERSION_STRING;
       OutputStringNote (Context, GNU_BUILD_ATTRIBUTE_TOOL,
-			buf, "tool note (plugin built by)");
+			note_buf.str ().c_str (), "tool note (plugin built by)");
 
       // FIXME: Since we are using documented clang API functions
       // we assume that a version mistmatch bewteen the plugin builder
@@ -197,40 +110,6 @@ private:
 
   private:
 
-    void
-    convert_to_valid_symbol_name (std::string& name)
-    {
-      for (auto & c : name)
-	if (!isalnum (c))
-	  c = '_';
-
-      if (global_file_name_symbols)
-	{
-	  /* A program can have multiple source files with the same name.
-	     Or indeed the same source file can be included multiple times.
-	     Or a library can be built from a sources which include file names
-	     that match application file names.  Whatever the reason, we need
-	     to be ensure that we generate unique global symbol names.  So we
-	     append the time to the symbol name.  This will of course break
-	     the functionality of build-ids and reproducible builds.  That is
-	     why this option is off by default.  */
-	  struct timeval tv;
-
-	  if (gettimeofday (& tv, NULL))
-	    {
-	      ice ("unable to get time of day.");
-	      tv.tv_sec = tv.tv_usec = 0;
-	    }
-
-	  std::ostringstream t;
-	  t << "_" << std::setfill('0') << std::setw(8) << (long) tv.tv_sec;
-	  t << "_" << std::setfill('0') << std::setw(8) << (long) tv.tv_usec;
-
-	  name += t.str();
-	  verbose ("Adding timestamp to filename symbols: %s", t.str().c_str());
-	}
-    }
-    
     void
     AddAsmText (ASTContext & Context, StringRef text)
     {
@@ -270,15 +149,6 @@ private:
 
       CI.getASTConsumer ().HandleTopLevelDecl (DeclGroupRef (NewDecl));
     }
-    
-    static void
-    add_line_to_note (std::ostringstream & buffer, const char * text, const char * comment = nullptr)
-    {
-      buffer << '\t' << text;
-      if (comment)
-        buffer << " \t/* " << comment << " */";
-      buffer << '\n';
-    }
 
     void
     OutputNote (ASTContext &  Context,
@@ -291,116 +161,15 @@ private:
 		const char *  end_symbol,
 		const char *  section_name)
     {
-      std::ostringstream text_buffer;
-      static char buf[1280];  // FIXME: We should be using a dynamically allocated buffer.
-      static const int align = 4;  // FIXME: 8-byte align for 64-bit notes ?
-
-      sprintf (buf, ".pushsection %s, \"\", %%note", section_name);
-      add_line_to_note (text_buffer, buf);
-      sprintf (buf, ".balign %d", align);
-      add_line_to_note (text_buffer, buf);
-
-      if (name == nullptr)
-	{
-	  if (namesz)
-	    ice ("null name with non-zero size");
-
-	  add_line_to_note (text_buffer, ".dc.l 0", "no name");
-	}
-      else if (name_is_string)
-	{
-	  char buf2[128];  // FIXME: This should be dynamic and extendable.
-
-	  if (strlen ((char *) name) != namesz - 1)
-	    ice ("name string does not match name size");
-
-	  sprintf (buf, ".dc.l %u", namesz);
-	  sprintf (buf2, "size of name [= strlen (%s)]\n", name);
-	  add_line_to_note (text_buffer, buf, buf2);
-	}
-      else
-	{
-	  sprintf (buf, ".dc.l %u", namesz);
-	  add_line_to_note (text_buffer, buf, "size of name");
-	}
-
-      if (start_symbol != NULL)
-	{
-	  if (end_symbol == NULL)
-	    ice ("start symbol without an end symbol");
-
-	  if (is_32bit)
-	    add_line_to_note (text_buffer, ".dc.l 8", "description size [= 2 * sizeof (address)]");
-	  else
-	    add_line_to_note (text_buffer, ".dc.l 16", "description size [= 2 * sizeof (address)]");
-	}
-      else
-	{
-	  if (end_symbol != NULL)
-	    ice ("end symbol without a start symbol");
-	  add_line_to_note (text_buffer, ".dc.l 0", "no description");
-	}
-
-      sprintf (buf, ".dc.l %d", type);
-      add_line_to_note (text_buffer, buf, "note type [256 = GLOBAL, 257 = FUNCTION]");
-
-      if (name)
-	{
-	  if (name_is_string)
-	    {
-	      add_line_to_note (text_buffer, name, name_description);
-	    }
-	  else
-	    {
-	      sprintf (buf, ".dc.b");
-
-	      for (unsigned i = 0; i < namesz; i++)
-		sprintf (buf + strlen (buf), " %#x%c", ((unsigned char *) name)[i],
-			 i < (namesz - 1) ? ',' : ' ');
-
-	      add_line_to_note (text_buffer, buf, name_description);
-	    }
-
-	  if (namesz % align)
-	    {
-	      sprintf (buf, ".dc.b");
-	      while (namesz % align)
-		{
-		  namesz++;
-		  if (namesz % align)
-		    strcat (buf, " 0,");
-		  else
-		    strcat (buf, " 0");
-		}
-	      add_line_to_note (text_buffer, buf, "padding");
-	    }
-	}
-
-      if (start_symbol)
-	{
-	  sprintf (buf, "%s %s", is_32bit ? ".dc.l" : ".quad", (char *) start_symbol);
-	  if (target_start_sym_bias)
-	    {
-	      /* We know that the annobin_current_filename symbol has been
-		 biased in order to avoid conflicting with the function
-		 name symbol for the first function in the file.  So reverse
-		 that bias here.  */
-	      if (start_symbol == annobin_current_file_start)
-		sprintf (buf + strlen (buf), "- %d", target_start_sym_bias);
-	    }
-
-	  add_line_to_note (text_buffer, buf, "start symbol");
-
-	  sprintf (buf, "%s %s", is_32bit ? ".dc.l" : ".quad", (char *) end_symbol);
-	  add_line_to_note (text_buffer, buf, "end symbol");
-	}
-
-      add_line_to_note (text_buffer, "\t.popsection\n\n");
-
-      AddAsmText (Context, text_buffer.str());
+      std::string asm_text = generateNoteAsm (is_32bit, name, namesz, name_is_string,
+					      name_description, type, start_symbol,
+					      end_symbol, section_name,
+					      target_start_sym_bias,
+					      annobin_current_file_start);
+      AddAsmText (Context, asm_text);
     }
 
-    void
+    bool
     OutputStringNote (ASTContext &  Context,
 		      const char    string_type,
 		      const char *  string,
@@ -410,10 +179,12 @@ private:
       char * buffer;
 
       buffer = (char *) malloc (len + 5);
+      if (buffer == NULL)
+	return false;
 
       sprintf (buffer, "GA%c%c%s", STRING, string_type, string);
 
-      verbose ("Record %s as '%s'", name_description, string);
+      verbose ("Record %s as string '%s'", name_description, string);
       /* Be kind to readers of the assembler source, and do
 	 not put control characters into ascii strings.  */
       OutputNote (Context,
@@ -422,67 +193,59 @@ private:
 		  GNU_BUILD_ATTRS_SECTION_NAME);
 
       free (buffer);
+      return true;
     }
 
-    void
+    bool
     OutputNumericNote (ASTContext &  Context,
 		       const char *  numeric_name,
 		       unsigned int  val,
 		       const char *  name_description)
     {
-      char buffer [128];  // FIXME: This should be dynamic and extendable.
-      unsigned len = sprintf (buffer, "GA%c%s", NUMERIC, numeric_name);
-      char last_byte = 0;
+      // Extra chars needed: 2 for "GA", one for NUMERIC and the ending 0.
+      size_t len = strlen (numeric_name) + sizeof (val) + (4 * sizeof (char));
+      char * buffer = (char *) malloc (len + 1);
 
-      // For non-alphabetic names, we do not need, or want, the terminating
-      // NUL at the end of the string.
-      if (! isprint (numeric_name[0]))
-	--len;
+      if (buffer == NULL)
+	return false;
+      len = genNumericNote (numeric_name, val, buffer, len);
 
-      verbose ("Record %s value of %u", name_description, val);
-	
-      do
-	{
-	  last_byte = buffer[++len] = val & 0xff;
-	  val >>= 8;
-	}
-      while (val);
-
-      if (last_byte != 0)
-	buffer[++len] = 0;
-
-      OutputNote (Context, buffer, len + 1, false, name_description,
+      OutputNote (Context, buffer, len, false, name_description,
 		  OPEN, annobin_current_file_start, annobin_current_file_end,
 		  GNU_BUILD_ATTRS_SECTION_NAME);
+
+      free (buffer);
+      return true;
     }
 
     void
     CheckOptions (CompilerInstance & CI, ASTContext & Context)
     {
       const CodeGenOptions & CodeOpts = CI.getCodeGenOpts ();
-
       unsigned int val = 0;
+
       val += CodeOpts.CFProtectionBranch ? 1 : 0;
       val += CodeOpts.CFProtectionReturn ? 2 : 0;
       // We bias the value by 1 so that we do not get confused by a zero value.
       val += 1;
       OutputNumericNote (Context, "cf_protection", val, "Control Flow protection");
-      
+
       // The -cfguard option is Windows only - so we ignore it.
 
       val = CodeOpts.OptimizationLevel;
-      if (val > 3)
-	val = 3;
-      // The optimization level occupies bits 9..11 of the GOW value.
-      val <<= 9;
+      // The optimization level occupies bits 9..10 of the GOW value.
+      val = std::min(val, 3U /*GOW_BITMASK_OPT_LEVEL*/);
+      val <<= GOW_BITSTART_OPT_LEVEL;
+
       // FIXME: The value of Context.getDiagnostics().getEnableAllWarnings() does
       // not appear to be valid in clang v9 onwards. :-(
       if (Context.getDiagnostics().getEnableAllWarnings())
-	val |= (1 << 14);
+	val |= GOW_BIT_WALL;
+
       if (CodeOpts.PrepareForLTO || CodeOpts.PrepareForThinLTO)
-	val |= (1 << 16);
+	val |= GOW_BIT_LTO;
       else
-	val |= (1 << 17);
+	val |= GOW_BIT_NO_LTO;
 
       verbose ("Optimization = %d, Wall = %d, LTO = %s",
 	       CodeOpts.OptimizationLevel,
@@ -495,7 +258,7 @@ private:
       val = CodeOpts.SpeculativeLoadHardening ? 2 : 1;
       OutputNumericNote (Context, "SpecLoadHarden", val, "Speculative Load Hardening");
 #endif
-      
+
       const LangOptions & lang_opts = CI.getLangOpts ();
 
       switch (lang_opts.getStackProtector())
@@ -503,9 +266,11 @@ private:
 	case clang::LangOptions::SSPStrong: val = 2; break;
 	case clang::LangOptions::SSPOff: val = 0; break;
 	case clang::LangOptions::SSPOn: val = 1; break;
+	case clang::LangOptions::SSPReq: val = 3; break;
 	default: val = 0; break;
 	}
-	  
+
+      verbose ("Record stack protection value %u", val);
       char stack_prot[2] = {GNU_BUILD_ATTRIBUTE_STACK_PROT, 0};
       OutputNumericNote (Context, stack_prot, val, "Stack Protection");
 
@@ -529,7 +294,7 @@ private:
 	val = 0;
       char pic[2] = {GNU_BUILD_ATTRIBUTE_PIC, 0};
       OutputNumericNote (Context, pic, val, "PIE");
-            
+
 #if 0 // Placeholder code for when we need to record preprocessor options
       const PreprocessorOptions & pre_opts = CI.getPreprocessorOpts ();
       if (pre_opts.Macros.empty ())
@@ -561,7 +326,7 @@ private:
 	    verbose ("Target feature: %s", targ_opts.FeaturesAsWritten[i].c_str());
 	}
 #endif
-    }    
+    }
   };
 
   class AnnobinDummyConsumer : public SemaConsumer
@@ -577,7 +342,7 @@ private:
     {
     }
   };
-  
+
   class AnnobinAction : public PluginASTAction
   {
   protected:
@@ -586,12 +351,11 @@ private:
     {
       if (enabled)
 	return std::make_unique<AnnobinConsumer>(CI);
-      else
-	return std::make_unique<AnnobinDummyConsumer>(CI);
+      return std::make_unique<AnnobinDummyConsumer>(CI);
     }
 
     // Automatically run the plugin
-    PluginASTAction::ActionType 
+    PluginASTAction::ActionType
     getActionType (void) override
     {
       return AddBeforeMainAction;
@@ -603,7 +367,7 @@ private:
     {
       return false;
     }
-    
+
     static bool
     parse_arg (const char * name, const char * value, void * data)
     {
@@ -649,9 +413,9 @@ private:
       // In verbose mode let the user know where options come from.
       // They might be unaware that the environment variable exists...
       if (data == NULL)
-	verbose ("parsed arg %s from command line");
+	verbose ("parsed arg %s from command line", name);
       else
-	verbose ("parsed arg %s from ANNOBIN environment variable");
+	verbose ("parsed arg %s from ANNOBIN environment variable", name);
 
       return true;
     }
@@ -660,12 +424,17 @@ private:
     bool
     ParseArgs (const CompilerInstance & , const std::vector<std::string>& args) override
     {
+      const char * av = getenv ("ANNOBIN_VERBOSE");
+
+      if (av != NULL && ! streq (av, "false"))
+	be_verbose = true;
+
       // Check the ANNOBIN environment variable first.
       // This allows command line options to override the environment.
       annobin_parse_env (parse_arg, (void *) "env");
 
-      for (unsigned i = 0, e = args.size(); i < e; ++i)
-	parse_arg (args[i].c_str (), "",  NULL);
+      for (const auto & i : args)
+	parse_arg (i.c_str (), "",  NULL);
 
       // This message has a secondary purpose.  It makes sure that the compiled
       // plugin includes a string which is specific to the installation directory.

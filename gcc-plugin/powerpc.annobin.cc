@@ -44,7 +44,7 @@ annobin_target_start_symbol_bias (void)
 }
 
 static void
-record_ABI_note (int val, annobin_function_info * info)
+record_ABI_note (int val ATTRIBUTE_UNUSED, annobin_function_info * info ATTRIBUTE_UNUSED)
 {
 #if 0 /* Currently annocheck does nothing with PPC64 ABI note, so save space and do not generate it.  */
   annobin_inform (INFORM_VERBOSE, "PowerPC: Recording TLS size of %d for %s",
